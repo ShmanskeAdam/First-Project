@@ -6,15 +6,17 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
-// SQLite has no native enum support, so PropertyType ("SINGLE_FAMILY" |
-// "MULTI_FAMILY" | "CONDO" | "TOWNHOUSE") and ListingStatus ("ACTIVE" |
-// "PENDING" | "SOLD") are stored as plain strings and typed at the TS layer
-// (see src/types/listing.ts). Switching to Postgres later can reintroduce
-// real `enum` blocks here without touching application code.
+// PropertyType ("SINGLE_FAMILY" | "MULTI_FAMILY" | "CONDO" | "TOWNHOUSE") and
+// ListingStatus ("ACTIVE" | "PENDING" | "SOLD") are stored as plain strings
+// rather than native Postgres enums, and typed at the TS layer instead (see
+// src/types/listing.ts). This was originally required when the project ran
+// on SQLite (no enum support there); kept as strings after the Postgres
+// migration so the two engines stay schema-compatible if local dev ever
+// needs to fall back to SQLite again.
 
 // Current state of a listing. Upserted on every sync from a ListingProvider.
 // Historical values live in ListingSnapshot / PriceChange so this table always

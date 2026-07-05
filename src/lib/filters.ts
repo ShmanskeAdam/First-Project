@@ -93,7 +93,8 @@ export function buildListingWhere(filters: ListingFilters): Prisma.ListingWhereI
   }
   if (filters.minGarageSpaces !== undefined) where.garageSpaces = { gte: filters.minGarageSpaces };
   if (filters.search) {
-    where.address = { contains: filters.search };
+    // Postgres `contains` is case-sensitive by default, unlike SQLite's default TEXT collation.
+    where.address = { contains: filters.search, mode: "insensitive" };
   }
 
   return where;

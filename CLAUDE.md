@@ -10,8 +10,10 @@ Somerset counties): a filterable/sortable listings table+grid, a market analytic
 trends, histograms, town comparisons), and a "Top Deals" leaderboard driven by a configurable scoring model.
 
 Stack: Next.js 14 App Router (TS) as a single full-stack app — pages under `src/app/*`, API route handlers under
-`src/app/api/*/route.ts`. Prisma + SQLite for storage (swap `DATABASE_URL` to Postgres for prod; the schema has no
-SQLite-specific syntax other than string-typed enums, see below). Tailwind for styling, Recharts for charts.
+`src/app/api/*/route.ts`. Prisma + **Postgres** for storage (originally SQLite; migrated to Postgres so the app can
+run on Vercel, whose serverless functions have an ephemeral/read-only filesystem that a SQLite file can't survive —
+see "Deployment" below). `propertyType`/`status` are still plain `String` columns rather than native Postgres
+enums, a holdover from the SQLite days kept for engine-portability. Tailwind for styling, Recharts for charts.
 
 ## Data provider interface
 
@@ -61,8 +63,17 @@ pattern as `rentcastProvider.ts`).
 `src/lib/ingest.ts` → `ingestRawListing(raw, source)` is the single place that turns a `RawListing` into DB rows:
 upserts the `Listing` (keyed on `[source, externalId]`), recomputes `pricePerSqft`/`daysOnMarket`, writes a
 `PriceChange` row if the price moved since last sync, and always appends one `ListingSnapshot` row. `scripts/sync-listings.ts`
-is the cron entrypoint (`npm run sync`); `POST /api/sync` exposes the same thing over HTTP, gated by the
-`x-sync-secret` header matching `SYNC_SECRET`.
+is the cron entrypoint (`npm run sync`); `POST /api/sync` exposes the same thing over HTTP.
+
+Every sync (cron, `npm run sync`, or a manual click) also calls `recordSyncStatus()` (`src/lib/syncStatus.ts`),
+which upserts the single-row `SyncStatus` table — this is what powers the "Last refreshed: Xm ago" indicator in the
+nav bar. `GET /api/sync` reads it (no auth, no side effects); `POST /api/sync` triggers a real sync. Unlike the
+CLI/cron path, the public UI's Refresh button can't carry `SYNC_SECRET` (it would have to ship in client-side JS),
+so `POST /api/sync` treats a request with a **valid** `x-sync-secret` header as trusted and skips the throttle, and
+rate-limits everything else to one sync per 30 seconds (`MIN_MANUAL_INTERVAL_MS` in `src/app/api/sync/route.ts`) —
+that throttle, not a secret, is what actually protects a live provider from being hammered by site visitors.
+`RefreshContext` (`src/context/RefreshContext.tsx`) exposes a `refreshKey` that every page's data-fetch effect
+depends on, so clicking Refresh re-fetches in place without a full page reload.
 
 `prisma/seed.ts` bypasses `ingest.ts` — it writes many `ListingSnapshot` rows per listing at once (from
 `generateWithHistory()`) instead of one-per-sync, since seeding needs to backfill history that never "really"
@@ -70,11 +81,11 @@ happened incrementally.
 
 ## Database schema (`prisma/schema.prisma`)
 
-- **`Listing`** — current state, one row per real-world property. Unique on `(source, externalId)`. SQLite has no
-  enum support, so `propertyType` (`SINGLE_FAMILY | MULTI_FAMILY | CONDO | TOWNHOUSE`) and `status`
-  (`ACTIVE | PENDING | SOLD`) are plain `String` columns, typed as unions at the TS layer
-  (`src/types/listing.ts`). Includes the NJ-buyer-specific fields added this session: `hoaFee`, `garageSpaces`,
-  `transitStationName`/`transitDistanceMiles` (commute/transit proximity), `schoolRating`.
+- **`Listing`** — current state, one row per real-world property. Unique on `(source, externalId)`. `propertyType`
+  (`SINGLE_FAMILY | MULTI_FAMILY | CONDO | TOWNHOUSE`) and `status` (`ACTIVE | PENDING | SOLD`) are plain `String`
+  columns rather than native Postgres enums (typed as unions at the TS layer, `src/types/listing.ts`) — a holdover
+  from when this ran on SQLite, kept for engine-portability. Includes the NJ-buyer-specific fields: `hoaFee`,
+  `garageSpaces`, `transitStationName`/`transitDistanceMiles` (commute/transit proximity), `schoolRating`.
 - **`ListingSnapshot`** — one row per listing per sync run (`capturedAt`, `status`, `listPrice`, `pricePerSqft`,
   `daysOnMarket`, plus denormalized `town`/`propertyType` for fast group-by). This is the *only* source for every
   time-series chart — median price over time, $/sqft trends, inventory levels, DOM trends — all computed by
@@ -85,6 +96,8 @@ happened incrementally.
 - **`ScoringConfig`** — single row (`id: "default"`) holding the deal-score weights described below. Edited from
   the Settings page via `GET`/`PUT /api/settings`.
 - **`FilterPreset`** — saved filter sets (`name`, `filters` as a JSON-encoded `ListingFilters` blob).
+- **`SyncStatus`** — single row (`id: "default"`) tracking the most recent sync (`lastSyncedAt`, `provider`,
+  `fetched`, `ingested`), written by every sync path and read by the nav bar's "Last refreshed" indicator.
 
 ## Deal-scoring engine (`src/lib/scoring/`)
 
@@ -132,6 +145,22 @@ paginated in memory rather than in SQL.
 
 Add one entry to `TOWNS` in `src/lib/towns.ts` (name, county, nearest transit station) — the filter panel, mock
 data generator, and town-comparison chart all read from that single list.
+
+## Deployment
+
+Targets Vercel. `package.json` has a `vercel-build` script (`prisma generate && prisma db push --accept-data-loss
+&& next build`) that Vercel automatically runs instead of `next build` — this applies the current schema to
+`DATABASE_URL` on every deploy via `db push` rather than tracked migrations, which is fine for this app's low-risk,
+mostly-additive schema changes but would need to switch to `prisma migrate deploy` + a migrations directory for a
+stricter production process. `postinstall: prisma generate` covers local `npm install`. See the README's
+"Deploying to Vercel" section for the exact click-through steps (Postgres provisioning, env vars, one-time seed).
+
+Two route-classification bugs were caught and fixed during this work, both worth remembering if you add a new API
+route: Next.js statically optimizes (and caches at *build* time) any route handler that doesn't read from the
+request — `GET /api/settings` was accidentally static this way, which would have served build-time-frozen scoring
+weights in production forever regardless of what was saved afterward. Any route reading mutable DB state needs
+either a request-driven input (searchParams, etc. — most routes here have one already) or an explicit
+`export const dynamic = "force-dynamic"` if it doesn't.
 
 ## Known mock-data quirks (expected, not bugs)
 
