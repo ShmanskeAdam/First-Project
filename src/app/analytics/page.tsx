@@ -7,6 +7,7 @@ import { PriceHistogramChart } from "@/components/charts/PriceHistogramChart";
 import { TownComparisonChart } from "@/components/charts/TownComparisonChart";
 import { fetchTowns, fetchTrends, fetchHistogram, fetchComparison } from "@/lib/apiClient";
 import { formatCompactCurrency } from "@/lib/format";
+import { useRefresh } from "@/context/RefreshContext";
 import type { TrendPoint } from "@/app/api/analytics/trends/route";
 import type { TownComparisonRow } from "@/app/api/analytics/comparison/route";
 import type { TownInfo } from "@/lib/towns";
@@ -32,12 +33,13 @@ export default function AnalyticsPage() {
   const [comparison, setComparison] = useState<TownComparisonRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { refreshKey } = useRefresh();
 
   useEffect(() => {
     fetchTowns()
       .then((r) => setTowns(r.towns))
       .catch(() => undefined);
-  }, []);
+  }, [refreshKey]);
 
   useEffect(() => {
     setLoading(true);
@@ -56,7 +58,7 @@ export default function AnalyticsPage() {
       })
       .catch(() => setError("Failed to load analytics data."))
       .finally(() => setLoading(false));
-  }, [selectedTowns, years, propertyType]);
+  }, [selectedTowns, years, propertyType, refreshKey]);
 
   return (
     <div>

@@ -6,6 +6,7 @@ import { fetchDeals, fetchTowns } from "@/lib/apiClient";
 import { formatCurrency, PROPERTY_TYPE_LABELS } from "@/lib/format";
 import { DealBadge } from "@/components/DealBadge";
 import { TownMultiSelect } from "@/components/TownMultiSelect";
+import { useRefresh } from "@/context/RefreshContext";
 import type { Listing, PropertyType } from "@/types/listing";
 import type { TownInfo } from "@/lib/towns";
 
@@ -24,12 +25,13 @@ export default function DealsPage() {
   const [listings, setListings] = useState<Listing[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { refreshKey } = useRefresh();
 
   useEffect(() => {
     fetchTowns()
       .then((r) => setTowns(r.towns))
       .catch(() => undefined);
-  }, []);
+  }, [refreshKey]);
 
   useEffect(() => {
     setLoading(true);
@@ -44,7 +46,7 @@ export default function DealsPage() {
       .then((r) => setListings(r.listings))
       .catch(() => setError("Failed to load top deals."))
       .finally(() => setLoading(false));
-  }, [selectedTowns, propertyType]);
+  }, [selectedTowns, propertyType, refreshKey]);
 
   return (
     <div>

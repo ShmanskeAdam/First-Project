@@ -9,6 +9,7 @@ import { getActiveProvider } from "../src/lib/providers";
 import { ingestRawListings } from "../src/lib/ingest";
 import { TOWN_NAMES } from "../src/lib/towns";
 import { prisma } from "../src/lib/db";
+import { recordSyncStatus } from "../src/lib/syncStatus";
 
 async function main() {
   const provider = getActiveProvider();
@@ -19,6 +20,8 @@ async function main() {
 
   const results = await ingestRawListings(raws, provider.key);
   console.log(`Ingested ${results.length} listings (upserted + snapshotted).`);
+
+  await recordSyncStatus(provider.key, raws.length, results.length);
 }
 
 main()

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import clsx from "clsx";
+import { RefreshStatus } from "./RefreshStatus";
 
 const LINKS = [
   { href: "/", label: "Listings" },
@@ -37,6 +38,9 @@ export function NavBar() {
             );
           })}
         </nav>
+        <div className="ml-auto">
+          <RefreshStatus />
+        </div>
       </div>
     </header>
   );

@@ -119,6 +119,17 @@ model ScoringConfig {
   updatedAt              DateTime @updatedAt
 }
 
+// Single-row table (id always "default") tracking the most recent data sync,
+// whether triggered by cron/CLI (`npm run sync`) or a manual click on the
+// "Refresh" button in the nav bar. Read by GET /api/sync, written by POST /api/sync.
+model SyncStatus {
+  id           String   @id @default("default")
+  lastSyncedAt DateTime
+  provider     String
+  fetched      Int
+  ingested     Int
+}
+
 // User-saved filter presets so common searches can be reapplied with one click.
 model FilterPreset {
   id        String   @id @default(cuid())

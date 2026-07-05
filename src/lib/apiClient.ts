@@ -2,6 +2,7 @@ import type { ListingFilters, ListingQuery, PaginatedListings, FilterPreset, Sco
 import type { TownInfo } from "@/lib/towns";
 import type { TrendPoint } from "@/app/api/analytics/trends/route";
 import type { TownComparisonRow } from "@/app/api/analytics/comparison/route";
+import type { SyncStatusPayload } from "@/lib/syncStatus";
 
 function toQueryString(filters: ListingFilters & Record<string, unknown>): string {
   const params = new URLSearchParams();
@@ -96,4 +97,24 @@ export async function createPreset(name: string, filters: ListingFilters): Promi
 
 export async function deletePreset(id: string): Promise<void> {
   await fetch(`/api/filter-presets/${id}`, { method: "DELETE" });
+}
+
+export async function fetchSyncStatus(): Promise<SyncStatusPayload> {
+  const res = await fetch("/api/sync");
+  if (!res.ok) throw new Error("Failed to fetch sync status");
+  return res.json();
+}
+
+export class SyncThrottledError extends Error {
+  constructor(public retryAfterSeconds: number) {
+    super(`Refreshed too recently. Try again in ${retryAfterSeconds}s.`);
+  }
+}
+
+export async function triggerSync(): Promise<SyncStatusPayload> {
+  const res = await fetch("/api/sync", { method: "POST" });
+  const body = await res.json();
+  if (res.status === 429) throw new SyncThrottledError(body.retryAfterSeconds ?? 30);
+  if (!res.ok) throw new Error(body.error ?? "Refresh failed");
+  return body;
 }

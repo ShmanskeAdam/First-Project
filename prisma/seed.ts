@@ -96,6 +96,12 @@ async function main() {
     update: {},
   });
 
+  await prisma.syncStatus.upsert({
+    where: { id: "default" },
+    create: { id: "default", lastSyncedAt: new Date(), provider: "mock", fetched: listingCount, ingested: listingCount },
+    update: { lastSyncedAt: new Date(), provider: "mock", fetched: listingCount, ingested: listingCount },
+  });
+
   console.log(
     `Seeded ${listingCount} listings, ${snapshotCount} snapshots, ${priceChangeCount} price changes.`
   );

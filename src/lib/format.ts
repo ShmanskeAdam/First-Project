@@ -32,6 +32,22 @@ export function formatDate(value: string | Date | null | undefined): string {
   return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(d);
 }
 
+/** "Just now" / "3m ago" / "5h ago" / "2d ago" — deliberately not `Intl.RelativeTimeFormat`, whose unit-rounding
+ * has shown the same kind of Node/browser ICU divergence as compact currency did, and this needs to tick client-side anyway. */
+export function formatRelativeTime(value: string | Date | null | undefined, now: number = Date.now()): string {
+  if (!value) return "never";
+  const d = typeof value === "string" ? new Date(value) : value;
+  const seconds = Math.max(0, Math.round((now - d.getTime()) / 1000));
+  if (seconds < 10) return "just now";
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  return `${days}d ago`;
+}
+
 export const PROPERTY_TYPE_LABELS: Record<string, string> = {
   SINGLE_FAMILY: "Single-Family",
   MULTI_FAMILY: "Multi-Family",

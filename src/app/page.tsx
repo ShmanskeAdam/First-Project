@@ -13,6 +13,7 @@ import {
   createPreset,
   deletePreset as deletePresetApi,
 } from "@/lib/apiClient";
+import { useRefresh } from "@/context/RefreshContext";
 import type { ListingFilters, PaginatedListings, SortField, FilterPreset } from "@/types/listing";
 import type { TownInfo } from "@/lib/towns";
 
@@ -29,6 +30,7 @@ export default function ListingsPage() {
   const [data, setData] = useState<PaginatedListings | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { refreshKey } = useRefresh();
 
   useEffect(() => {
     fetchTowns()
@@ -37,7 +39,7 @@ export default function ListingsPage() {
     fetchPresets()
       .then((r) => setPresets(r.presets))
       .catch(() => undefined);
-  }, []);
+  }, [refreshKey]);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -46,7 +48,10 @@ export default function ListingsPage() {
       .then(setData)
       .catch(() => setError("Failed to load listings. Is the dev server / database reachable?"))
       .finally(() => setLoading(false));
-  }, [filters, sortField, sortDir, page]);
+    // refreshKey isn't read in the body — it's a trigger bumped by the nav-bar "Refresh"
+    // button so this callback identity changes and the effect below refetches.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters, sortField, sortDir, page, refreshKey]);
 
   useEffect(() => {
     load();
