@@ -1,0 +1,128 @@
+// North NJ Real Estate Tracker — database schema
+// See CLAUDE.md for a narrative description of these models and how they're used.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// SQLite has no native enum support, so PropertyType ("SINGLE_FAMILY" |
+// "MULTI_FAMILY" | "CONDO" | "TOWNHOUSE") and ListingStatus ("ACTIVE" |
+// "PENDING" | "SOLD") are stored as plain strings and typed at the TS layer
+// (see src/types/listing.ts). Switching to Postgres later can reintroduce
+// real `enum` blocks here without touching application code.
+
+// Current state of a listing. Upserted on every sync from a ListingProvider.
+// Historical values live in ListingSnapshot / PriceChange so this table always
+// reflects "what the market looks like right now".
+model Listing {
+  id        String   @id @default(cuid())
+  source    String // provider key, e.g. "mock", "rentcast", "csv:redfin"
+  externalId String  // id assigned by the source provider, unique per source
+  address   String
+  town      String
+  county    String
+  zip       String
+  lat       Float?
+  lng       Float?
+
+  listPrice      Float
+  pricePerSqft   Float
+  beds           Float
+  baths          Float
+  sqft           Int
+  lotSizeSqft    Int?
+  yearBuilt      Int?
+  propertyType   String
+  status         String @default("ACTIVE")
+
+  listedDate     DateTime
+  soldDate       DateTime?
+  soldPrice      Float?
+  daysOnMarket   Int // recomputed on each sync relative to listedDate (or soldDate if sold)
+
+  // NJ-buyer-specific extras
+  hoaFee               Float? // monthly, null if none
+  garageSpaces         Int?
+  transitStationName   String?
+  transitDistanceMiles Float? // driving distance to nearest NJ Transit / PATH station
+  schoolRating         Float? // 0-10, null if data source doesn't supply it
+
+  photoUrl String?
+  url      String? // link back to source listing page
+
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  snapshots    ListingSnapshot[]
+  priceChanges PriceChange[]
+
+  @@unique([source, externalId])
+  @@index([town])
+  @@index([propertyType])
+  @@index([status])
+  @@index([listPrice])
+  @@index([pricePerSqft])
+}
+
+// One row per listing per sync run. This is the raw material for every
+// time-series chart (median price over time, DOM trends, inventory levels...)
+// — aggregates are computed on read by grouping snapshots by month/town.
+model ListingSnapshot {
+  id           String        @id @default(cuid())
+  listingId    String
+  listing      Listing       @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  capturedAt   DateTime
+  status       String
+  listPrice    Float
+  pricePerSqft Float
+  daysOnMarket Int
+  town         String // denormalized for fast group-by without a join
+  propertyType String // denormalized for fast group-by without a join
+
+  @@index([capturedAt])
+  @@index([town, capturedAt])
+  @@index([listingId])
+}
+
+// A detected price change between two consecutive syncs. Drives the "price
+// cut magnitude + recency" signal in the deal-scoring engine and the price
+// history shown in the listings table.
+model PriceChange {
+  id        String   @id @default(cuid())
+  listingId String
+  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  oldPrice  Float
+  newPrice  Float
+  changedAt DateTime
+
+  @@index([listingId])
+  @@index([changedAt])
+}
+
+// Single-row table (id always "default") holding the tunable weights for the
+// deal-scoring engine. Edited from the Settings page.
+model ScoringConfig {
+  id                     String   @id @default("default")
+  pricePerSqftWeight     Float    @default(0.4)
+  priceCutWeight         Float    @default(0.3)
+  domWeight              Float    @default(0.1)
+  compSalesWeight        Float    @default(0.2)
+  priceCutRecencyDays    Int      @default(30)
+  compSaleLookbackMonths Int      @default(12)
+  updatedAt              DateTime @updatedAt
+}
+
+// User-saved filter presets so common searches can be reapplied with one click.
+model FilterPreset {
+  id        String   @id @default(cuid())
+  name      String
+  filters   String // JSON-encoded ListingFilters
+  createdAt DateTime @default(now())
+}
