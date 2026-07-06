@@ -122,19 +122,22 @@ to the Refresh button the first time this happens.
    - `DATABASE_URL` — the Postgres connection string from step 1
    - `LISTING_PROVIDER` — `mock` to launch with demo data, `static` if you've imported real data via a CSV (see
      "Real data without an API key" above) and don't want Refresh reintroducing mock listings, or `rentcast` +
-     `RENTCAST_API_KEY` for a live API feed
-   - `SYNC_SECRET` — a random string, used to protect any cron-triggered `POST /api/sync` calls
+     `RENTCAST_API_KEY` for a live, fully-automated API feed
+   - `SYNC_SECRET` — a random string, protects manual/CLI-triggered `POST /api/sync` calls
+   - `CRON_SECRET` — a random string; only needed if using `rentcast` (see step 6)
 4. Vercel auto-detects the `vercel-build` script in `package.json` (`prisma generate && prisma db push && next build`)
    and uses it instead of `next build`, so the schema is applied to your database on every deploy — no manual
    migration step needed.
 5. After the first deploy, seed it once: run `DATABASE_URL="<your prod url>" npm run db:seed` from your machine (or
    any environment that can reach the DB) to populate demo listings. **Don't** add seeding to the build step — the
    seed script wipes and regenerates listings, which would erase any real synced data on every redeploy.
-6. To keep trend charts accumulating real history over time, schedule something to hit
-   `POST /api/sync` with header `x-sync-secret: <SYNC_SECRET>` **once a day** — a
-   [Vercel Cron Job](https://vercel.com/docs/cron-jobs) is the simplest option on Vercel itself. Daily is the
-   right cadence for RentCast's free tier (see "Switching to a live API" above) — more frequent than that will
-   exceed the 50-requests/month quota.
+6. **If using RentCast**, `vercel.json` already configures a daily Vercel Cron Job hitting `GET /api/cron/sync` at
+   9am UTC (`"0 9 * * *"` — the max frequency Vercel's free Hobby plan allows, which is also exactly the right
+   cadence for RentCast's 50-requests/month cap). Once `CRON_SECRET` is set and the project is deployed, this runs
+   automatically — Vercel reads that same env var to sign its cron requests, so there's nothing else to configure.
+   This makes the whole pipeline hands-off: the cron job pulls today's rotating county every day with zero manual
+   effort, and the site's Refresh button still works for on-demand pulls in between. Want full North NJ coverage
+   immediately rather than waiting for the week-long rotation? Run `DATABASE_URL="<your prod url>" RENTCAST_API_KEY="<your key>" npm run sync:full` once from your machine.
 
 ## Scripts
 

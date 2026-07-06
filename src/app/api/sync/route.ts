@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getActiveProvider, getDefaultSyncQuery } from "@/lib/providers";
-import { ingestRawListings, clearMockListingsIfLiveSource } from "@/lib/ingest";
-import { getSyncStatus, recordSyncStatus } from "@/lib/syncStatus";
+import { runSync } from "@/lib/runSync";
+import { getSyncStatus } from "@/lib/syncStatus";
 
 export const dynamic = "force-dynamic";
 
@@ -17,11 +16,12 @@ export async function GET() {
 }
 
 /**
- * Triggers a listings sync from the active provider. A request bearing a valid
- * `x-sync-secret` header (matching SYNC_SECRET) is treated as a trusted cron/CLI
- * caller and bypasses the throttle; anonymous calls (the UI's "Refresh" button)
- * are rate-limited instead of secret-gated, since the secret can't live in
- * client-side code.
+ * Triggers a listings sync from the active provider (see `runSync`). A request
+ * bearing a valid `x-sync-secret` header (matching SYNC_SECRET) is treated as a
+ * trusted CLI/manual caller and bypasses the throttle; anonymous calls (the
+ * UI's "Refresh" button) are rate-limited instead of secret-gated, since the
+ * secret can't live in client-side code. The daily Vercel Cron job hits
+ * `GET /api/cron/sync` instead of this route — see that route for why.
  */
 export async function POST(req: NextRequest) {
   const secret = process.env.SYNC_SECRET;
@@ -43,12 +43,8 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const provider = getActiveProvider();
-    const raws = await provider.fetchListings(getDefaultSyncQuery(provider));
-    const results = await ingestRawListings(raws, provider.key);
-    const clearedMockListings = await clearMockListingsIfLiveSource(provider.key);
-    const status = await recordSyncStatus(provider.key, raws.length, results.length);
-    return NextResponse.json({ ...status, clearedMockListings });
+    const status = await runSync();
+    return NextResponse.json(status);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Sync failed";
     return NextResponse.json({ error: message }, { status: 500 });

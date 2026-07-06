@@ -207,6 +207,18 @@ weights in production forever regardless of what was saved afterward. Any route 
 either a request-driven input (searchParams, etc. — most routes here have one already) or an explicit
 `export const dynamic = "force-dynamic"` if it doesn't.
 
+### Automatic daily sync (Vercel Cron)
+
+`src/lib/runSync.ts` holds the one actual sync implementation (fetch → ingest → clear-mock-if-live → record
+status), shared by three callers that differ only in auth: `POST /api/sync` (UI Refresh button — throttled, no
+secret required since one can't live in client JS), a trusted `POST /api/sync` call with a matching
+`x-sync-secret` header (manual/CLI use), and `GET /api/cron/sync` (`vercel.json`'s daily cron, `"0 9 * * *"` — the
+max frequency Vercel's free Hobby plan allows). The cron route can't reuse the `x-sync-secret` check because
+Vercel Cron always sends GET with no custom headers; instead it checks `Authorization: Bearer <CRON_SECRET>`,
+which Vercel automatically attaches when a `CRON_SECRET` env var is set — the developer sets that env var once and
+Vercel handles signing the request itself. All three paths call `getDefaultSyncQuery()`, so the cron job inherits
+the same RentCast daily-county-rotation quota safety as everything else.
+
 ## Known mock-data quirks (expected, not bugs)
 
 - DOM trend charts trend upward over the seeded window — that's individual mock listings aging within their own
