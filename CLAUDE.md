@@ -40,9 +40,20 @@ Implementations, all in `src/lib/providers/`:
   what `prisma/seed.ts` uses to backfill ~2 years of `ListingSnapshot`/`PriceChange` rows so the trend charts have
   something to show on a fresh clone with zero API calls.
 - **`RentCastListingProvider`** (`rentcastProvider.ts`) — live data via https://www.rentcast.io/api.
-  Set `LISTING_PROVIDER=rentcast` and `RENTCAST_API_KEY` in `.env`. Calls `GET /listings/sale` per town (RentCast
-  has no county/bounding-box query), so `fetchListings` requires an explicit `towns` list — the sync script passes
-  `TOWN_NAMES` from `src/lib/towns.ts`.
+  Set `LISTING_PROVIDER=rentcast` and `RENTCAST_API_KEY` in `.env`. Calls `GET /listings/sale` **per county**
+  (`county` + `state` params), not per town — RentCast's free tier caps out at 50 requests/month, and this app
+  tracks 51 towns across only 7 counties, so a per-town query would blow the entire monthly quota in a single
+  sync. `fetchListings` requires an explicit `counties` list (`ListingProviderQuery.counties`) and paginates via
+  `limit`/`offset` (500/page, RentCast's max) up to `maxPagesPerArea` pages per county (default 1).
+  - `getDefaultSyncQuery()` (`providers/index.ts`) is what the automatic path (Refresh button, `npm run sync`,
+    cron) actually uses: **one county per calendar day**, picked deterministically by `src/lib/syncRotation.ts`
+    (`getTodaysCounty()`, a `dayOfYear % 7` index into `COUNTIES`). That's exactly 1 request/day ≈ 30/month,
+    safely under quota regardless of how many times Refresh gets clicked on a given day — repeat clicks the same
+    day just re-sync the same county. Full North NJ coverage still happens, just on a rolling ~weekly basis per
+    county rather than instantly.
+  - `getFullSyncQuery()` is the opt-in alternative used by `npm run sync:full` (`scripts/sync-full.ts`): all 7
+    counties at once with `maxPagesPerArea: 5`, for a one-time comprehensive pull (e.g., right after initial
+    setup). Costs far more quota per run, so it's deliberately not part of the automatic/daily path.
 - **`CsvListingProvider`** (`csvProvider.ts`) — parses a Redfin "Download All" CSV export (a feature Redfin
   explicitly permits, and the only real-data path that needs no API key or account) into `RawListing[]`. Not wired
   into `getActiveProvider()` since it takes a CSV string rather than reading env config; `scripts/import-csv.ts` is

@@ -64,7 +64,7 @@ the CSV export includes one.
 
 ## Switching to a live API (RentCast)
 
-Set in `.env`:
+Set in `.env` (or as Vercel env vars for your deployment):
 
 ```
 LISTING_PROVIDER="rentcast"
@@ -72,20 +72,32 @@ RENTCAST_API_KEY="your-key-here"
 ```
 
 Get a free-tier key at https://www.rentcast.io/api — this does require creating an account, unlike the CSV path
-above. Then run:
+above. **Note the free tier's quota: 50 requests/month.** This app queries RentCast by *county* rather than by
+individual town (7 North NJ counties vs. 51 towns — see CLAUDE.md for why), and the automatic path only pulls
+**one county per calendar day**, rotating through all 7 over a week:
 
 ```bash
-npm run sync
+npm run sync          # or click the site's Refresh button, or a daily cron hitting POST /api/sync
 ```
 
-This is the fully-automated path: every sync (whether triggered by the CLI, a cron job, or clicking the site's
-Refresh button) loops over **every configured North NJ town** (`TOWN_NAMES` in `src/lib/towns.ts`, ~49 towns)
-automatically, **upserts by RentCast's own listing ID so re-running never creates duplicates** (it updates the
-existing row instead), and — the first time it runs — **clears the seeded demo listings automatically**. Once
-`LISTING_PROVIDER=rentcast` and `RENTCAST_API_KEY` are set, clicking Refresh requires no further manual steps
-ever again. Re-run `npm run sync` (or click Refresh, or hit `POST /api/sync` from a cron job with the
-`x-sync-secret` header set to `SYNC_SECRET`) periodically to keep price/DOM history accumulating for the trend
-charts.
+This costs exactly **1 request/day ≈ 30/month**, comfortably under the 50 cap, no matter how many times you click
+Refresh on a given day (repeat clicks the same day just re-sync the same county, not a new one). Every county gets
+refreshed roughly once a week on a rolling basis — not everything updates instantly on every click, but nothing
+ever goes stale for more than about a week, and you can never run over quota by clicking too often. Duplicates
+can't happen either way: every listing upserts by RentCast's own listing ID, so re-fetching the same property
+updates it in place. The first sync also **clears the seeded demo listings automatically**.
+
+Want full North NJ coverage immediately (e.g., right after your first setup) instead of waiting a week for the
+rotation to reach every county? Run a one-time full sync across all 7 counties at once:
+
+```bash
+npm run sync:full
+```
+
+This costs more of the monthly quota in one shot (roughly 7-35 requests depending on how many active listings
+each county has — RentCast pages at 500 listings per request) — fine to run once, but don't put it on a daily
+schedule or you'll blow through the cap fast. After that, let the daily-rotating `npm run sync` (or Refresh
+button / cron) keep things fresh going forward.
 
 ## Manual refresh
 
@@ -119,8 +131,10 @@ to the Refresh button the first time this happens.
    any environment that can reach the DB) to populate demo listings. **Don't** add seeding to the build step — the
    seed script wipes and regenerates listings, which would erase any real synced data on every redeploy.
 6. To keep trend charts accumulating real history over time, schedule something to hit
-   `POST /api/sync` with header `x-sync-secret: <SYNC_SECRET>` periodically — a
-   [Vercel Cron Job](https://vercel.com/docs/cron-jobs) is the simplest option on Vercel itself.
+   `POST /api/sync` with header `x-sync-secret: <SYNC_SECRET>` **once a day** — a
+   [Vercel Cron Job](https://vercel.com/docs/cron-jobs) is the simplest option on Vercel itself. Daily is the
+   right cadence for RentCast's free tier (see "Switching to a live API" above) — more frequent than that will
+   exceed the 50-requests/month quota.
 
 ## Scripts
 
@@ -134,7 +148,8 @@ to the Refresh button the first time this happens.
 | `npm run db:migrate` | Create a tracked migration (use once you're past rapid prototyping) |
 | `npm run db:seed` | Wipe and reseed mock data |
 | `npm run db:studio` | Prisma Studio, a GUI for the DB |
-| `npm run sync` | Pull fresh listings from the active provider and append history |
+| `npm run sync` | Pull today's rotating county (RentCast) or all towns (other providers) |
+| `npm run sync:full` | One-time full sync across all 7 North NJ counties at once (costs more quota) |
 | `npm run import:csv -- <file>` | One-off import of a Redfin CSV export — no API key needed |
 | `npm run clear:mock` | Delete all mock-sourced listings (e.g. before/after a real-data import) |
 | `npm run vercel-build` | What Vercel actually runs: generate client, push schema, build |
@@ -148,7 +163,8 @@ src/
   lib/
     providers/             # ListingProvider interface + mock/RentCast/CSV adapters
     scoring/                # deal-scoring engine + tunable config
-    towns.ts               # configurable North NJ town list
+    towns.ts               # configurable North NJ town list + county grouping
+    syncRotation.ts        # day -> county picker so RentCast syncs stay under quota
     filters.ts, db.ts, ingest.ts, serialize.ts, stats.ts, format.ts, syncStatus.ts
   context/RefreshContext.tsx # nav-bar refresh button + refetch-on-refresh plumbing
   types/listing.ts          # shared TS types
@@ -156,7 +172,8 @@ prisma/
   schema.prisma             # Listing, ListingSnapshot, PriceChange, ScoringConfig, FilterPreset, SyncStatus
   seed.ts                    # mock data generator + historical backfill
 scripts/
-  sync-listings.ts           # provider -> DB sync job (cron entrypoint)
+  sync-listings.ts           # daily provider -> DB sync job (cron entrypoint)
+  sync-full.ts                # one-time full sync across all counties/towns
   import-csv.ts              # one-off Redfin CSV import (no API key needed)
   clear-mock-listings.ts     # delete seeded demo listings
 ```

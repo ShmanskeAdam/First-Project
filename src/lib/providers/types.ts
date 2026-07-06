@@ -41,8 +41,12 @@ export interface RawListing {
 
 export interface ListingProviderQuery {
   towns?: string[];
+  /** County-level scoping (e.g. RentCastListingProvider) — one API call per county instead of per town. */
+  counties?: string[];
   /** Max number of results this call should return (providers may page internally). */
   limit?: number;
+  /** Max pages to paginate through per county/town when a provider supports it (default provider-specific). */
+  maxPagesPerArea?: number;
 }
 
 /**

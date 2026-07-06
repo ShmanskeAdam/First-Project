@@ -4,18 +4,24 @@
  * Run manually with `npm run sync`, or schedule it (OS cron, a systemd timer,
  * Vercel Cron hitting /api/sync, etc.) to keep the historical snapshots —
  * and therefore the trend charts — up to date.
+ *
+ * For RentCast, this uses the same day-rotating single-county query as the
+ * site's own Refresh button (see src/lib/syncRotation.ts) to stay within the
+ * free tier's 50 requests/month. For an immediate one-time pull across every
+ * North NJ county at once (more requests, but instant full coverage), use
+ * `npm run sync:full` instead.
  */
-import { getActiveProvider } from "../src/lib/providers";
+import { getActiveProvider, getDefaultSyncQuery } from "../src/lib/providers";
 import { ingestRawListings, clearMockListingsIfLiveSource } from "../src/lib/ingest";
-import { TOWN_NAMES } from "../src/lib/towns";
 import { prisma } from "../src/lib/db";
 import { recordSyncStatus } from "../src/lib/syncStatus";
 
 async function main() {
   const provider = getActiveProvider();
-  console.log(`Syncing listings via provider "${provider.key}"...`);
+  const query = getDefaultSyncQuery(provider);
+  console.log(`Syncing listings via provider "${provider.key}"...`, query.counties ? `(county: ${query.counties.join(", ")})` : "");
 
-  const raws = await provider.fetchListings({ towns: TOWN_NAMES });
+  const raws = await provider.fetchListings(query);
   console.log(`Fetched ${raws.length} listings.`);
 
   const results = await ingestRawListings(raws, provider.key);

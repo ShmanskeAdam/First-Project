@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getActiveProvider } from "@/lib/providers";
+import { getActiveProvider, getDefaultSyncQuery } from "@/lib/providers";
 import { ingestRawListings, clearMockListingsIfLiveSource } from "@/lib/ingest";
-import { TOWN_NAMES } from "@/lib/towns";
 import { getSyncStatus, recordSyncStatus } from "@/lib/syncStatus";
 
 export const dynamic = "force-dynamic";
@@ -45,7 +44,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const provider = getActiveProvider();
-    const raws = await provider.fetchListings({ towns: TOWN_NAMES });
+    const raws = await provider.fetchListings(getDefaultSyncQuery(provider));
     const results = await ingestRawListings(raws, provider.key);
     const clearedMockListings = await clearMockListingsIfLiveSource(provider.key);
     const status = await recordSyncStatus(provider.key, raws.length, results.length);

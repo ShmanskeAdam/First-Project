@@ -1,6 +1,8 @@
 import { MockListingProvider } from "./mockProvider";
 import { RentCastListingProvider } from "./rentcastProvider";
-import type { ListingProvider } from "./types";
+import type { ListingProvider, ListingProviderQuery } from "./types";
+import { TOWN_NAMES, COUNTIES } from "@/lib/towns";
+import { getTodaysCounty } from "@/lib/syncRotation";
 
 export * from "./types";
 export { MockListingProvider } from "./mockProvider";
@@ -47,4 +49,29 @@ export function getActiveProvider(): ListingProvider {
     default:
       return new MockListingProvider();
   }
+}
+
+/**
+ * The query to use for an automatic sync (Refresh button click, or a cron job
+ * without an explicit override): RentCast only pulls *today's* county — see
+ * `syncRotation.ts` for why — while every other provider works from the full
+ * town list as before (they aren't request-quota-constrained the same way).
+ */
+export function getDefaultSyncQuery(provider: ListingProvider): ListingProviderQuery {
+  if (provider.key === "rentcast") {
+    return { counties: [getTodaysCounty()] };
+  }
+  return { towns: TOWN_NAMES };
+}
+
+/**
+ * The query for a deliberate, one-time full sync across all of North NJ in a
+ * single run (`npm run sync:full`) — costs far more of RentCast's monthly
+ * quota than the daily rotation, so it's opt-in only, not the automatic path.
+ */
+export function getFullSyncQuery(provider: ListingProvider): ListingProviderQuery {
+  if (provider.key === "rentcast") {
+    return { counties: COUNTIES.slice(), maxPagesPerArea: 5 };
+  }
+  return { towns: TOWN_NAMES };
 }
