@@ -15,7 +15,7 @@
  */
 import fs from "node:fs";
 import { CsvListingProvider } from "../src/lib/providers/csvProvider";
-import { ingestRawListings } from "../src/lib/ingest";
+import { ingestRawListings, clearMockListingsIfLiveSource } from "../src/lib/ingest";
 import { recordSyncStatus } from "../src/lib/syncStatus";
 import { prisma } from "../src/lib/db";
 
@@ -44,6 +44,9 @@ async function main() {
 
   const results = await ingestRawListings(raws, provider.key);
   console.log(`Ingested ${results.length} listings (upserted + snapshotted).`);
+
+  const cleared = await clearMockListingsIfLiveSource(provider.key);
+  if (cleared > 0) console.log(`Cleared ${cleared} leftover mock/demo listings.`);
 
   await recordSyncStatus(provider.key, raws.length, results.length);
   console.log("Recorded sync status — the site's 'Last refreshed' indicator will reflect this import.");

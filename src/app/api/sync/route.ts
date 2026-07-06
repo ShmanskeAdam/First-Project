@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getActiveProvider } from "@/lib/providers";
-import { ingestRawListings } from "@/lib/ingest";
+import { ingestRawListings, clearMockListingsIfLiveSource } from "@/lib/ingest";
 import { TOWN_NAMES } from "@/lib/towns";
 import { getSyncStatus, recordSyncStatus } from "@/lib/syncStatus";
 
@@ -47,8 +47,9 @@ export async function POST(req: NextRequest) {
     const provider = getActiveProvider();
     const raws = await provider.fetchListings({ towns: TOWN_NAMES });
     const results = await ingestRawListings(raws, provider.key);
+    const clearedMockListings = await clearMockListingsIfLiveSource(provider.key);
     const status = await recordSyncStatus(provider.key, raws.length, results.length);
-    return NextResponse.json(status);
+    return NextResponse.json({ ...status, clearedMockListings });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Sync failed";
     return NextResponse.json({ error: message }, { status: 500 });

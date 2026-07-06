@@ -6,7 +6,7 @@
  * and therefore the trend charts — up to date.
  */
 import { getActiveProvider } from "../src/lib/providers";
-import { ingestRawListings } from "../src/lib/ingest";
+import { ingestRawListings, clearMockListingsIfLiveSource } from "../src/lib/ingest";
 import { TOWN_NAMES } from "../src/lib/towns";
 import { prisma } from "../src/lib/db";
 import { recordSyncStatus } from "../src/lib/syncStatus";
@@ -20,6 +20,9 @@ async function main() {
 
   const results = await ingestRawListings(raws, provider.key);
   console.log(`Ingested ${results.length} listings (upserted + snapshotted).`);
+
+  const cleared = await clearMockListingsIfLiveSource(provider.key);
+  if (cleared > 0) console.log(`Cleared ${cleared} leftover mock listings now that a live source is active.`);
 
   await recordSyncStatus(provider.key, raws.length, results.length);
 }

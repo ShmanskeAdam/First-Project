@@ -2,7 +2,7 @@ import type { ListingFilters, ListingQuery, PaginatedListings, FilterPreset, Sco
 import type { TownInfo } from "@/lib/towns";
 import type { TrendPoint } from "@/app/api/analytics/trends/route";
 import type { TownComparisonRow } from "@/app/api/analytics/comparison/route";
-import type { SyncStatusPayload } from "@/lib/syncStatus";
+import type { SyncStatusPayload, SyncTriggerResult } from "@/lib/syncStatus";
 
 function toQueryString(filters: ListingFilters & Record<string, unknown>): string {
   const params = new URLSearchParams();
@@ -115,7 +115,7 @@ export class SyncThrottledError extends Error {
   }
 }
 
-export async function triggerSync(): Promise<SyncStatusPayload> {
+export async function triggerSync(): Promise<SyncTriggerResult> {
   const res = await fetch("/api/sync", { method: "POST" });
   const body = await res.json();
   if (res.status === 429) throw new SyncThrottledError(body.retryAfterSeconds ?? 30);

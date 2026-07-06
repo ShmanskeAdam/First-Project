@@ -35,26 +35,6 @@ createdb nnj_tracker    # or: psql -c "CREATE DATABASE nnj_tracker;"
 The app works fully offline out of the box — `LISTING_PROVIDER=mock` in `.env` means no API key is required to see
 listings, filters, charts, or deal scoring in action.
 
-## Switching to live data
-
-Set in `.env`:
-
-```
-LISTING_PROVIDER="rentcast"
-RENTCAST_API_KEY="your-key-here"
-```
-
-Get a free-tier key at https://www.rentcast.io/api. Then run:
-
-```bash
-npm run sync
-```
-
-This fetches current listings for every configured town (see `src/lib/towns.ts`) and upserts them into the DB,
-recording any price changes and appending a `ListingSnapshot` row per listing — the raw material for the trend
-charts. Re-run `npm run sync` periodically (cron, a systemd timer, Vercel Cron hitting `POST /api/sync` with the
-`x-sync-secret` header set to `SYNC_SECRET`) to keep history accumulating.
-
 ## Real data without an API key or account
 
 Redfin lets you export search results to CSV directly from your browser, no login required for a normal-sized
@@ -71,15 +51,12 @@ search (a free Redfin account raises the row cap if you need it, but isn't requi
    DATABASE_URL="<your Postgres connection string>" npm run import:csv -- ~/Downloads/redfin_export.csv
    ```
    This upserts the rows (by address/MLS#) using the same ingest path a live sync would use, so price-cut
-   detection and snapshot history work identically going forward. Safe to run repeatedly with more exports.
-5. Clear the seeded demo listings so the site doesn't show a mix of fake and real data:
-   ```bash
-   DATABASE_URL="<your Postgres connection string>" npm run clear:mock
-   ```
-6. Set `LISTING_PROVIDER=static` (in `.env` locally, and as a Vercel env var for your deployment). This matters —
-   without it, `LISTING_PROVIDER` defaults to `mock`, and clicking the site's **Refresh** button would silently
-   regenerate fake listings on top of the real ones you just imported. `static` makes Refresh a harmless no-op
-   until you wire up a live provider.
+   detection and snapshot history work identically going forward. Safe to run repeatedly with more exports. It
+   also **automatically deletes any leftover seeded demo listings** the first time it runs — no separate cleanup
+   step needed (`npm run clear:mock` still exists if you ever want to trigger that immediately on its own).
+5. Set `LISTING_PROVIDER=static` (in `.env` locally, and as a Vercel env var for your deployment). This matters —
+   without it, `LISTING_PROVIDER` defaults to `mock`, and clicking the site's **Refresh** button would fall back
+   to regenerating fake listings. `static` makes Refresh a harmless no-op until you wire up a live provider.
 
 The "demo data" banner disappears automatically once real data has been imported (it keys off which provider ran
 the most recent sync), and "view listing" links will now resolve to the real Redfin page for each property since
@@ -101,10 +78,14 @@ above. Then run:
 npm run sync
 ```
 
-This fetches current listings for every configured town (see `src/lib/towns.ts`) and upserts them into the DB,
-recording any price changes and appending a `ListingSnapshot` row per listing — the raw material for the trend
-charts. Re-run `npm run sync` periodically (cron, a systemd timer, Vercel Cron hitting `POST /api/sync` with the
-`x-sync-secret` header set to `SYNC_SECRET`) to keep history accumulating.
+This is the fully-automated path: every sync (whether triggered by the CLI, a cron job, or clicking the site's
+Refresh button) loops over **every configured North NJ town** (`TOWN_NAMES` in `src/lib/towns.ts`, ~49 towns)
+automatically, **upserts by RentCast's own listing ID so re-running never creates duplicates** (it updates the
+existing row instead), and — the first time it runs — **clears the seeded demo listings automatically**. Once
+`LISTING_PROVIDER=rentcast` and `RENTCAST_API_KEY` are set, clicking Refresh requires no further manual steps
+ever again. Re-run `npm run sync` (or click Refresh, or hit `POST /api/sync` from a cron job with the
+`x-sync-secret` header set to `SYNC_SECRET`) periodically to keep price/DOM history accumulating for the trend
+charts.
 
 ## Manual refresh
 
@@ -113,6 +94,11 @@ on demand (backed by `GET`/`POST /api/sync` and a `SyncStatus` row). Since the b
 carry `SYNC_SECRET` (that would mean shipping the secret in client-side JS), so manual clicks are rate-limited to
 once per 30 seconds instead — a request that *does* present a valid `x-sync-secret` header (e.g. a cron job) skips
 the throttle. See `src/app/api/sync/route.ts`.
+
+Whenever the active provider isn't `mock`, every sync (button click, cron job, or CLI) also automatically deletes
+any leftover seeded demo listings first — so switching to `rentcast` or importing real CSV data is fully hands-off
+from that point forward, with no separate cleanup step. A one-time "Cleared N demo listings" notice appears next
+to the Refresh button the first time this happens.
 
 ## Deploying to Vercel
 

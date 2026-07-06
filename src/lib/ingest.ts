@@ -95,3 +95,14 @@ export async function ingestRawListings(raws: RawListing[], source: string) {
   }
   return results;
 }
+
+/**
+ * Deletes any leftover seeded mock listings the first time a real provider
+ * syncs, so switching from demo data to a live source is fully hands-off —
+ * no separate manual "clear mock" step required. A no-op once none remain.
+ */
+export async function clearMockListingsIfLiveSource(activeSource: string): Promise<number> {
+  if (activeSource === "mock") return 0;
+  const result = await prisma.listing.deleteMany({ where: { source: "mock" } });
+  return result.count;
+}

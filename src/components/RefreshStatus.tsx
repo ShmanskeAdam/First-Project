@@ -6,7 +6,7 @@ import { useRefresh } from "@/context/RefreshContext";
 import { formatRelativeTime } from "@/lib/format";
 
 export function RefreshStatus() {
-  const { lastSyncedAt, refreshing, error, refresh } = useRefresh();
+  const { lastSyncedAt, refreshing, error, notice, refresh } = useRefresh();
   const [, forceTick] = useState(0);
 
   // Re-render every 15s so "3m ago" keeps advancing without a new fetch.
@@ -33,6 +33,7 @@ export function RefreshStatus() {
         {refreshing ? "Refreshing…" : "Refresh"}
       </button>
       {error && <span className="text-xs text-rose-600">{error}</span>}
+      {notice && <span className="text-xs text-emerald-600">{notice}</span>}
     </div>
   );
 }

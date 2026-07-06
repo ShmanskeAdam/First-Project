@@ -7,6 +7,11 @@ export interface SyncStatusPayload {
   ingested: number | null;
 }
 
+/** POST /api/sync's response — the persisted status plus this call's one-off cleanup count. */
+export interface SyncTriggerResult extends SyncStatusPayload {
+  clearedMockListings: number;
+}
+
 export async function getSyncStatus(): Promise<SyncStatusPayload> {
   const row = await prisma.syncStatus.findUnique({ where: { id: "default" } });
   if (!row) return { lastSyncedAt: null, provider: null, fetched: null, ingested: null };

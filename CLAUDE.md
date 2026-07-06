@@ -54,7 +54,8 @@ Implementations, all in `src/lib/providers/`:
   returns `[]`) selected via `LISTING_PROVIDER=static`. Exists so that after a one-off CSV import, clicking the
   site's Refresh button doesn't fall through to the "mock" default and silently regenerate fake listings on top of
   the real ones just imported. `scripts/clear-mock-listings.ts` (`npm run clear:mock`) deletes any leftover
-  mock-sourced rows (cascades to their snapshots/price changes) so a real-data site doesn't show a fake/real mix.
+  mock-sourced rows (cascades to their snapshots/price changes) on demand, though this now also happens
+  automatically (see `clearMockListingsIfLiveSource` below).
 
 `src/lib/providers/index.ts` → `getActiveProvider()` picks the provider from `LISTING_PROVIDER` (defaults to
 `"mock"`). **Do not build a Zillow scraper** — Zillow's ToS prohibits it. RentCast/RapidAPI resellers, ATTOM, and
@@ -66,7 +67,16 @@ pattern as `rentcastProvider.ts`).
 `src/lib/ingest.ts` → `ingestRawListing(raw, source)` is the single place that turns a `RawListing` into DB rows:
 upserts the `Listing` (keyed on `[source, externalId]`), recomputes `pricePerSqft`/`daysOnMarket`, writes a
 `PriceChange` row if the price moved since last sync, and always appends one `ListingSnapshot` row. `scripts/sync-listings.ts`
-is the cron entrypoint (`npm run sync`); `POST /api/sync` exposes the same thing over HTTP.
+is the cron entrypoint (`npm run sync`); `POST /api/sync` exposes the same thing over HTTP. Deduplication is
+inherent to the upsert key — re-syncing the same property (matched by the provider's own ID) updates the existing
+row rather than creating a new one, for every provider.
+
+`ingest.ts` also exports `clearMockListingsIfLiveSource(activeSource)`, called by both `scripts/sync-listings.ts`
+and `POST /api/sync` right after ingesting: if the active provider isn't `"mock"`, it deletes every `source: "mock"`
+listing (a no-op once none remain). This makes switching from demo data to a real source (RentCast, or a CSV
+import) fully hands-off — the very next sync/refresh/import cleans up the fake listings with no separate manual
+step. `POST /api/sync`'s response includes `clearedMockListings`, which `RefreshContext` surfaces as a one-time
+"Cleared N demo listings" notice next to the Refresh button.
 
 Every sync (cron, `npm run sync`, or a manual click) also calls `recordSyncStatus()` (`src/lib/syncStatus.ts`),
 which upserts the single-row `SyncStatus` table — this is what powers the "Last refreshed: Xm ago" indicator in the
