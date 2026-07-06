@@ -17,6 +17,9 @@ export interface ScoringInput {
   priceChanges: Array<{ oldPrice: number; newPrice: number; changedAt: string | Date }>;
 }
 
+/** Which comp universe to score a listing against. */
+export type ScoreScope = "town" | "nj";
+
 interface CohortStats {
   avgPricePerSqft: number;
   medianDaysOnMarket: number;
@@ -32,17 +35,27 @@ interface SoldCohortStats {
  * Precomputed comparison cohorts so every listing can be scored in O(1)
  * instead of re-querying the whole dataset per row. Built once per request
  * from the full (unfiltered) listing universe via `buildCompIndex`.
+ *
+ * Two independent scopes are supported: "town" (comps drawn from the
+ * listing's own town, falling back to looser town-agnostic cohorts only when
+ * the town-level cohort is too small) and "nj" (comps drawn from the entire
+ * North NJ market regardless of town, so a listing is scored purely against
+ * "similar homes anywhere in North Jersey"). Both scopes share the same
+ * type+bed and type-only cohorts as their outermost fallback tiers, since
+ * those are already town-agnostic.
  */
 export class CompIndex {
   private activeCohorts = new Map<string, CohortStats>();
   private soldCohorts = new Map<string, SoldCohortStats>();
   private townDom = new Map<string, number>();
+  private njMedianDom: number;
   private globalActive: CohortStats;
   private globalSold: SoldCohortStats;
 
   constructor(listings: ScoringInput[], private lookbackMonths: number) {
     this.globalActive = aggregateActive(listings);
     this.globalSold = aggregateSold(listings, lookbackMonths);
+    this.njMedianDom = median(nonSold(listings).map((l) => l.daysOnMarket));
 
     const byTown = groupBy(listings, (l) => l.town);
     for (const [town, group] of byTown) {
@@ -61,37 +74,63 @@ export class CompIndex {
       this.soldCohorts.set(key, aggregateSold(group, lookbackMonths));
     }
 
+    // NJ-wide (town-agnostic) tiers — the "nj" scope's tight cohort, and a
+    // shared outermost fallback for both scopes.
     const byType = groupBy(listings, (l) => l.propertyType);
     for (const [type, group] of byType) {
-      this.activeCohorts.set(type, aggregateActive(group));
-      this.soldCohorts.set(type, aggregateSold(group, lookbackMonths));
+      this.activeCohorts.set(njKey(type), aggregateActive(group));
+      this.soldCohorts.set(njKey(type), aggregateSold(group, lookbackMonths));
+    }
+
+    const byTypeBeds = groupBy(listings, (l) => `${l.propertyType}|${bedBucket(l.beds)}`);
+    for (const [key, group] of byTypeBeds) {
+      this.activeCohorts.set(njKey(key), aggregateActive(group));
+      this.soldCohorts.set(njKey(key), aggregateSold(group, lookbackMonths));
     }
   }
 
-  /** Falls back from the tightest cohort (town+type+bed bucket) to looser ones when a cohort has too few comps. */
-  activeCohortFor(l: ScoringInput): CohortStats {
-    const tight = this.activeCohorts.get(`${l.town}|${l.propertyType}|${bedBucket(l.beds)}`);
-    if (tight && tight.count >= 3) return tight;
-    const medium = this.activeCohorts.get(`${l.town}|${l.propertyType}`);
-    if (medium && medium.count >= 3) return medium;
-    const loose = this.activeCohorts.get(l.propertyType);
-    if (loose && loose.count >= 3) return loose;
+  /**
+   * "town" scope falls back tightest-to-loosest: town+type+beds -> town+type
+   * -> NJ-wide type+beds -> NJ-wide type -> global. "nj" scope skips the
+   * town-specific tiers entirely: NJ-wide type+beds -> NJ-wide type -> global.
+   */
+  activeCohortFor(l: ScoringInput, scope: ScoreScope): CohortStats {
+    if (scope === "town") {
+      const tight = this.activeCohorts.get(`${l.town}|${l.propertyType}|${bedBucket(l.beds)}`);
+      if (tight && tight.count >= 3) return tight;
+      const medium = this.activeCohorts.get(`${l.town}|${l.propertyType}`);
+      if (medium && medium.count >= 3) return medium;
+    }
+    const njTight = this.activeCohorts.get(njKey(`${l.propertyType}|${bedBucket(l.beds)}`));
+    if (njTight && njTight.count >= 3) return njTight;
+    const njLoose = this.activeCohorts.get(njKey(l.propertyType));
+    if (njLoose && njLoose.count >= 3) return njLoose;
     return this.globalActive;
   }
 
-  soldCohortFor(l: ScoringInput): SoldCohortStats {
-    const tight = this.soldCohorts.get(`${l.town}|${l.propertyType}|${bedBucket(l.beds)}`);
-    if (tight && tight.count >= 2) return tight;
-    const medium = this.soldCohorts.get(`${l.town}|${l.propertyType}`);
-    if (medium && medium.count >= 2) return medium;
-    const loose = this.soldCohorts.get(l.propertyType);
-    if (loose && loose.count >= 2) return loose;
+  soldCohortFor(l: ScoringInput, scope: ScoreScope): SoldCohortStats {
+    if (scope === "town") {
+      const tight = this.soldCohorts.get(`${l.town}|${l.propertyType}|${bedBucket(l.beds)}`);
+      if (tight && tight.count >= 2) return tight;
+      const medium = this.soldCohorts.get(`${l.town}|${l.propertyType}`);
+      if (medium && medium.count >= 2) return medium;
+    }
+    const njTight = this.soldCohorts.get(njKey(`${l.propertyType}|${bedBucket(l.beds)}`));
+    if (njTight && njTight.count >= 2) return njTight;
+    const njLoose = this.soldCohorts.get(njKey(l.propertyType));
+    if (njLoose && njLoose.count >= 2) return njLoose;
     return this.globalSold;
   }
 
-  townMedianDom(town: string): number {
-    return this.townDom.get(town) ?? median(Array.from(this.townDom.values())) ?? 30;
+  medianDomFor(town: string, scope: ScoreScope): number {
+    if (scope === "nj") return this.njMedianDom || 30;
+    return this.townDom.get(town) ?? this.njMedianDom ?? 30;
   }
+}
+
+/** Prefixed so a property type like "CONDO" can't collide with a town literally named "CONDO". */
+function njKey(suffix: string): string {
+  return `NJ|${suffix}`;
 }
 
 export function buildCompIndex(listings: ScoringInput[], lookbackMonths: number): CompIndex {
@@ -136,32 +175,40 @@ function groupBy<T>(items: T[], keyFn: (item: T) => string): Map<string, T[]> {
   return map;
 }
 
-/** Maps a "% below comp average" value to a 0-1 component, clamped at +/-30%. Neutral (0.5) at 0%. */
+/** Maps a "% better/worse than baseline" value to a 0-1 component, clamped at +/-30%. Neutral (0.5) at 0%. */
 function pctBelowToComponent(pctBelow: number): number {
   return clip((clip(pctBelow, -0.3, 0.3) + 0.3) / 0.6, 0, 1);
 }
 
-/**
- * Scores one listing against its precomputed comp cohorts. Returns a 0-100
- * score plus a human-readable breakdown of which signals drove it — both the
- * Top Deals leaderboard and the inline table badge use this same result.
- */
-export function scoreListing(listing: ScoringInput, index: CompIndex, config: ScoringConfig): DealScoreResult {
-  const reasons: DealScoreReason[] = [];
+const SCOPE_LABEL: Record<ScoreScope, string> = {
+  town: "in {town}",
+  nj: "across North NJ",
+};
 
-  // 1. Price/sqft vs. comparable active listings (town + type + bed cohort, falling back to looser cohorts).
-  const cohort = index.activeCohortFor(listing);
+/**
+ * Scores one listing against its precomputed comp cohorts for a given scope
+ * ("town" = comps from the listing's own town, "nj" = comps from the entire
+ * North NJ market). Returns a 0-100 score plus a human-readable breakdown of
+ * which signals drove it — both the Top Deals leaderboard and the inline
+ * table badges use this same result.
+ */
+export function scoreListing(listing: ScoringInput, index: CompIndex, config: ScoringConfig, scope: ScoreScope): DealScoreResult {
+  const reasons: DealScoreReason[] = [];
+  const scopeText = SCOPE_LABEL[scope].replace("{town}", listing.town);
+
+  // 1. Price/sqft vs. comparable active listings.
+  const cohort = index.activeCohortFor(listing, scope);
   const pctBelowAvgPpsf = cohort.avgPricePerSqft > 0 ? (cohort.avgPricePerSqft - listing.pricePerSqft) / cohort.avgPricePerSqft : 0;
   const ppsfComponent = pctBelowToComponent(pctBelowAvgPpsf);
   if (Math.abs(pctBelowAvgPpsf) >= 0.08) {
     reasons.push({
       label: pctBelowAvgPpsf > 0 ? "Priced below comps" : "Priced above comps",
-      detail: `${Math.abs(Math.round(pctBelowAvgPpsf * 100))}% ${pctBelowAvgPpsf > 0 ? "below" : "above"} average $/sqft for comparable ${listing.propertyType.toLowerCase().replace("_", "-")} homes in ${listing.town}`,
+      detail: `${Math.abs(Math.round(pctBelowAvgPpsf * 100))}% ${pctBelowAvgPpsf > 0 ? "below" : "above"} average $/sqft for comparable ${listing.propertyType.toLowerCase().replace("_", "-")} homes ${scopeText}`,
       points: Math.round(config.pricePerSqftWeight * (ppsfComponent - 0.5) * 200),
     });
   }
 
-  // 2. Price-cut magnitude + recency.
+  // 2. Price-cut magnitude + recency — scope-independent (based on the listing's own history).
   let priceCutComponent = 0;
   const recentCuts = listing.priceChanges
     .filter((c) => c.newPrice < c.oldPrice)
@@ -181,35 +228,35 @@ export function scoreListing(listing: ScoringInput, index: CompIndex, config: Sc
     }
   }
 
-  // 3. Days on market vs. town median, combined with price positioning. Freshness alone
-  // (domRatio <= 1) is not a deal signal either way and stays neutral — only *staleness*
-  // moves the needle, and only in the direction price positioning suggests: stale +
-  // underpriced reads as a possible motivated seller (reward), stale + overpriced reads
-  // as a possible underlying issue (penalize). This deliberately avoids "old = bad deal".
-  const townMedianDom = index.townMedianDom(listing.town);
-  const domRatio = listing.daysOnMarket / Math.max(townMedianDom, 1);
+  // 3. Days on market vs. median (town median for "town" scope, NJ-wide median for "nj"
+  // scope), combined with price positioning. Freshness alone (domRatio <= 1) is not a deal
+  // signal either way and stays neutral — only *staleness* moves the needle, and only in the
+  // direction price positioning suggests: stale + underpriced reads as a possible motivated
+  // seller (reward), stale + overpriced reads as a possible underlying issue (penalize).
+  const medianDom = index.medianDomFor(listing.town, scope);
+  const domRatio = listing.daysOnMarket / Math.max(medianDom, 1);
   const pricedWell = ppsfComponent >= 0.5;
   const staleness = Math.max(0, domRatio - 1);
   const domComponent = clip(0.5 + (pricedWell ? 1 : -1) * staleness * 0.5, 0, 1);
   if (Math.abs(domComponent - 0.5) >= 0.15) {
     reasons.push({
       label: pricedWell ? "Stale + underpriced" : "Stale + overpriced",
-      detail: `${listing.daysOnMarket} days on market vs. town median of ${Math.round(townMedianDom)}${
+      detail: `${listing.daysOnMarket} days on market vs. median of ${Math.round(medianDom)} ${scopeText}${
         pricedWell ? " — could indicate a motivated seller" : " — may indicate an underlying issue"
       }`,
       points: Math.round(config.domWeight * (domComponent - 0.5) * 200),
     });
   }
 
-  // 4. Price relative to recent comparable sold prices in the same town/type/bed cohort.
-  const soldCohort = index.soldCohortFor(listing);
+  // 4. Price relative to recent comparable sold prices.
+  const soldCohort = index.soldCohortFor(listing, scope);
   const pctBelowSoldAvg =
     soldCohort.avgSoldPricePerSqft > 0 ? (soldCohort.avgSoldPricePerSqft - listing.pricePerSqft) / soldCohort.avgSoldPricePerSqft : 0;
   const compSalesComponent = soldCohort.count > 0 ? pctBelowToComponent(pctBelowSoldAvg) : 0.5;
   if (soldCohort.count > 0 && Math.abs(pctBelowSoldAvg) >= 0.08) {
     reasons.push({
       label: pctBelowSoldAvg > 0 ? "Below recent comp sales" : "Above recent comp sales",
-      detail: `${Math.abs(Math.round(pctBelowSoldAvg * 100))}% ${pctBelowSoldAvg > 0 ? "below" : "above"} the average $/sqft of ${soldCohort.count} comparable sale${soldCohort.count === 1 ? "" : "s"} in the last ${config.compSaleLookbackMonths} months`,
+      detail: `${Math.abs(Math.round(pctBelowSoldAvg * 100))}% ${pctBelowSoldAvg > 0 ? "below" : "above"} the average $/sqft of ${soldCohort.count} comparable sale${soldCohort.count === 1 ? "" : "s"} ${scopeText} in the last ${config.compSaleLookbackMonths} months`,
       points: Math.round(config.compSalesWeight * (compSalesComponent - 0.5) * 200),
     });
   }
@@ -227,11 +274,24 @@ export function scoreListing(listing: ScoringInput, index: CompIndex, config: Sc
   return { score, reasons };
 }
 
-export function scoreListings(listings: ScoringInput[], config: ScoringConfig): Map<string, DealScoreResult> {
+export interface DualDealScore {
+  town: DealScoreResult;
+  nj: DealScoreResult;
+}
+
+/** Computes both the town-comps and NJ-wide scores for one listing in a single pass. */
+export function scoreListingBothScopes(listing: ScoringInput, index: CompIndex, config: ScoringConfig): DualDealScore {
+  return {
+    town: scoreListing(listing, index, config, "town"),
+    nj: scoreListing(listing, index, config, "nj"),
+  };
+}
+
+export function scoreListings(listings: ScoringInput[], config: ScoringConfig): Map<string, DualDealScore> {
   const index = buildCompIndex(listings, config.compSaleLookbackMonths);
-  const results = new Map<string, DealScoreResult>();
+  const results = new Map<string, DualDealScore>();
   for (const listing of listings) {
-    results.set(listing.id, scoreListing(listing, index, config));
+    results.set(listing.id, scoreListingBothScopes(listing, index, config));
   }
   return results;
 }

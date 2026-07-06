@@ -3,7 +3,9 @@ import { prisma } from "@/lib/db";
 import { buildListingWhere, buildOrderBy, parseListingQuery } from "@/lib/filters";
 import { serializeListing } from "@/lib/serialize";
 import { scoreListingsById } from "@/lib/scoring/service";
-import type { PaginatedListings } from "@/types/listing";
+import type { PaginatedListings, SortField } from "@/types/listing";
+
+const DEAL_SCORE_SORT_FIELDS: SortField[] = ["dealScoreTown", "dealScoreNj"];
 
 export async function GET(req: NextRequest) {
   const query = parseListingQuery(req.nextUrl.searchParams);
@@ -12,15 +14,20 @@ export async function GET(req: NextRequest) {
   const pageSize = Math.min(100, Math.max(1, query.pageSize ?? 25));
   const sortDir = query.sortDir ?? "desc";
 
-  if (query.sortField === "dealScore") {
-    // Deal score isn't a DB column — pull every matching row, score in memory, then paginate.
+  if (query.sortField && DEAL_SCORE_SORT_FIELDS.includes(query.sortField)) {
+    // Deal scores aren't DB columns — pull every matching row, score in memory, then paginate.
     const rows = await prisma.listing.findMany({ where, include: { priceChanges: true } });
     const scores = await scoreListingsById(rows.map((r) => r.id));
+    const scoreKey = query.sortField === "dealScoreTown" ? "town" : "nj";
     const listings = rows
-      .map((row) => ({ row, score: scores.get(row.id)?.score ?? 0 }))
+      .map((row) => ({ row, score: scores.get(row.id)?.[scoreKey]?.score ?? 0 }))
       .sort((a, b) => (sortDir === "asc" ? a.score - b.score : b.score - a.score))
       .slice((page - 1) * pageSize, (page - 1) * pageSize + pageSize)
-      .map(({ row, score }) => ({ ...serializeListing(row), dealScore: scores.get(row.id) }));
+      .map(({ row }) => ({
+        ...serializeListing(row),
+        dealScoreTown: scores.get(row.id)?.town,
+        dealScoreNj: scores.get(row.id)?.nj,
+      }));
 
     const body: PaginatedListings = { listings, total: rows.length, page, pageSize };
     return NextResponse.json(body);
@@ -40,7 +47,11 @@ export async function GET(req: NextRequest) {
   ]);
 
   const scores = await scoreListingsById(rows.map((r) => r.id));
-  const listings = rows.map((row) => ({ ...serializeListing(row), dealScore: scores.get(row.id) }));
+  const listings = rows.map((row) => ({
+    ...serializeListing(row),
+    dealScoreTown: scores.get(row.id)?.town,
+    dealScoreNj: scores.get(row.id)?.nj,
+  }));
 
   const body: PaginatedListings = { listings, total, page, pageSize };
   return NextResponse.json(body);

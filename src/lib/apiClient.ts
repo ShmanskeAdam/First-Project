@@ -30,8 +30,12 @@ export async function fetchTowns(): Promise<{ towns: TownInfo[]; counties: strin
   return res.json();
 }
 
-export async function fetchDeals(filters: ListingFilters, limit = 50): Promise<PaginatedListings> {
-  const qs = toQueryString({ ...filters, limit } as ListingFilters & Record<string, unknown>);
+export async function fetchDeals(
+  filters: ListingFilters,
+  limit = 50,
+  rankBy: "town" | "nj" = "town"
+): Promise<PaginatedListings> {
+  const qs = toQueryString({ ...filters, limit, rankBy } as ListingFilters & Record<string, unknown>);
   const res = await fetch(`/api/deals?${qs}`);
   if (!res.ok) throw new Error("Failed to fetch deals");
   return res.json();

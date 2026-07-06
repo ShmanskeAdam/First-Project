@@ -11,5 +11,9 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
   if (!row) return NextResponse.json({ error: "Listing not found" }, { status: 404 });
 
   const scores = await scoreListingsById([row.id]);
-  return NextResponse.json({ ...serializeListing(row), dealScore: scores.get(row.id) });
+  return NextResponse.json({
+    ...serializeListing(row),
+    dealScoreTown: scores.get(row.id)?.town,
+    dealScoreNj: scores.get(row.id)?.nj,
+  });
 }

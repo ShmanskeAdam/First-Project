@@ -49,7 +49,8 @@ export interface Listing {
   priceChanges: PriceChangeEntry[];
 
   /** Populated on read by the deal-scoring engine; not stored on the row itself. */
-  dealScore?: DealScoreResult;
+  dealScoreTown?: DealScoreResult;
+  dealScoreNj?: DealScoreResult;
 }
 
 export interface ListingFilters {
@@ -89,7 +90,8 @@ export type SortField =
   | "yearBuilt"
   | "daysOnMarket"
   | "listedDate"
-  | "dealScore";
+  | "dealScoreTown"
+  | "dealScoreNj";
 
 export interface ListingQuery extends ListingFilters {
   sortField?: SortField;

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { NavBar } from "@/components/NavBar";
+import { DemoDataBanner } from "@/components/DemoDataBanner";
 import { RefreshProvider } from "@/context/RefreshContext";
 import "./globals.css";
 
@@ -14,6 +15,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         <RefreshProvider>
           <NavBar />
+          <DemoDataBanner />
           <main className="mx-auto max-w-[1600px] px-6 py-6">{children}</main>
         </RefreshProvider>
       </body>

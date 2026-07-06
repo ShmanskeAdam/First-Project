@@ -100,7 +100,7 @@ export function buildListingWhere(filters: ListingFilters): Prisma.ListingWhereI
   return where;
 }
 
-const SORT_FIELD_MAP: Record<Exclude<SortField, "dealScore">, string> = {
+const SORT_FIELD_MAP: Record<Exclude<SortField, "dealScoreTown" | "dealScoreNj">, string> = {
   listPrice: "listPrice",
   pricePerSqft: "pricePerSqft",
   beds: "beds",
@@ -112,9 +112,9 @@ const SORT_FIELD_MAP: Record<Exclude<SortField, "dealScore">, string> = {
   listedDate: "listedDate",
 };
 
-/** `dealScore` isn't a DB column (it's computed post-query), so callers must sort in-memory for that case. */
+/** Deal scores aren't DB columns (they're computed post-query), so callers must sort in-memory for that case. */
 export function buildOrderBy(sortField?: SortField, sortDir: "asc" | "desc" = "desc"): Prisma.ListingOrderByWithRelationInput | undefined {
-  if (!sortField || sortField === "dealScore") return undefined;
+  if (!sortField || sortField === "dealScoreTown" || sortField === "dealScoreNj") return undefined;
   const column = SORT_FIELD_MAP[sortField];
   return { [column]: sortDir };
 }

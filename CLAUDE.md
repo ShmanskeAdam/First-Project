@@ -104,47 +104,68 @@ happened incrementally.
 `dealScore.ts` is the core algorithm; `service.ts` wires it to the DB (builds comp cohorts from the *entire*
 market, not just the current filtered/paginated view — comps must reflect the real town/type/bed market).
 
-Score is 0-100, a weighted blend of four 0-1 components (weights come from `ScoringConfig`, defaults in
+**Every listing gets two independent scores**, not one: `dealScoreTown` (comps drawn from the listing's own town)
+and `dealScoreNj` (comps drawn from the entire North NJ market, town-agnostic). Both run the exact same weighted
+algorithm below — they differ only in which `CompIndex` cohort lookup (`ScoreScope`, `"town"` vs `"nj"`) feeds the
+price/sqft, DOM-median, and comp-sales components. `scoreListingBothScopes()` computes both in one pass; `"nj"`
+mode skips the town-specific cohort tiers entirely and starts at the NJ-wide type+bed tier. The price-cut component
+is scope-independent (it's based on the listing's own history, not comps), so it's identical in both scores.
+
+Each score is 0-100, a weighted blend of four 0-1 components (weights come from `ScoringConfig`, defaults in
 parens):
 
 1. **Price/sqft vs. comps** (`pricePerSqftWeight`, 0.4) — listing's `pricePerSqft` vs. the average for active
-   listings in the same town + propertyType + bed-count bucket (buckets: 1, 2, 3, 4, "5+"). Falls back to looser
-   cohorts (town+type → type-only → global) when the tight cohort has fewer than 3 comps, so small towns still get
-   a sensible baseline instead of a missing signal.
+   listings in the same propertyType + bed-count bucket (buckets: 1, 2, 3, 4, "5+"), additionally scoped to town
+   for the town score. Falls back to looser cohorts (town+type → NJ-wide type+beds → type-only → global) when the
+   tight cohort has fewer than 3 comps, so small towns still get a sensible baseline instead of a missing signal.
 2. **Price-cut magnitude + recency** (`priceCutWeight`, 0.3) — the most recent cut's `%` drop, scaled down linearly
    as it ages past `priceCutRecencyDays` (default 30d). A 10%+ cut at day 0 maxes out this component; anything
    older than the recency window contributes nothing.
-3. **Days on market vs. town median** (`domWeight`, 0.1) — **deliberately not** "old = bad deal" per the original
-   spec. Freshness alone (at or below the town's median DOM) is neutral either way. Only *staleness* (above
-   median) moves this component, and the direction depends on price positioning: stale + already-underpriced reads
-   as a possible motivated seller (reward), stale + overpriced reads as a possible underlying issue (penalize).
-   This was a real bug caught during development — an earlier version penalized *fresh* well-priced listings
-   symmetrically; see the `staleness = max(0, domRatio - 1)` guard in `scoreListing()`.
+3. **Days on market vs. median** (`domWeight`, 0.1) — town median for the town score, NJ-wide median for the NJ
+   score. **Deliberately not** "old = bad deal" per the original spec. Freshness alone (at or below the median) is
+   neutral either way. Only *staleness* (above median) moves this component, and the direction depends on price
+   positioning: stale + already-underpriced reads as a possible motivated seller (reward), stale + overpriced reads
+   as a possible underlying issue (penalize). This was a real bug caught during development — an earlier version
+   penalized *fresh* well-priced listings symmetrically; see the `staleness = max(0, domRatio - 1)` guard in
+   `scoreListing()`.
 4. **Price vs. recent comp sales** (`compSalesWeight`, 0.2) — listing's `pricePerSqft` vs. the average sold
    `pricePerSqft` (soldPrice / sqft) among `SOLD` listings in the same cohort within `compSaleLookbackMonths`
    (default 12mo), same fallback-cohort logic as #1. Neutral (0.5) when there's no comp-sale data at all.
 
 Each component is computed as "% better/worse than baseline," clipped to ±30%, and rescaled to 0-1 (0.5 = at
 baseline). `scoreListing()` returns both the numeric score and a `reasons[]` array (label + human-readable detail +
-point contribution) — the same result renders the inline `DealBadge` in the listings table and the "why this
-score" breakdown on the Top Deals leaderboard, so there's exactly one scoring implementation to keep in sync.
+point contribution) — the same result renders the inline `DealBadge` in the listings table (two columns, Town and
+NJ) and the "why this score" breakdown on the Top Deals leaderboard, so there's exactly one scoring implementation
+to keep in sync. The leaderboard's "Rank by" toggle (`/api/deals?rankBy=town|nj`) sorts by whichever score the user
+picks; both scores are always included in the response regardless of ranking choice.
 
 Weights are tunable from the Settings page (`src/app/settings/page.tsx` → `PUT /api/settings`) and take effect on
-the very next request — nothing is cached or requires a restart.
+the very next request — nothing is cached or requires a restart. The same weights apply to both scopes.
 
 ## Filters
 
 `src/lib/filters.ts` is the single source of truth for the `ListingFilters` shape, query-string parsing
 (`parseListingFilters`), and the Prisma `where` clause builder (`buildListingWhere`) — used identically by
 `/api/listings`, `/api/deals`, and the analytics endpoints, so "the currently filtered result set" means the same
-thing everywhere the phrase applies (e.g. the price histogram). Sorting by `dealScore` is a special case (handled
-in `/api/listings/route.ts`) since it's not a DB column — the matching rows are pulled, scored, sorted, and
-paginated in memory rather than in SQL.
+thing everywhere the phrase applies (e.g. the price histogram). Sorting by `dealScoreTown`/`dealScoreNj` is a
+special case (handled in `/api/listings/route.ts`) since neither is a DB column — the matching rows are pulled,
+scored, sorted, and paginated in memory rather than in SQL. `/deals` uses the same `FilterPanel` component as the
+main listings page (not a stripped-down subset) so any filter available on one is available on the other.
 
 ## Adding a town
 
 Add one entry to `TOWNS` in `src/lib/towns.ts` (name, county, nearest transit station) — the filter panel, mock
 data generator, and town-comparison chart all read from that single list.
+
+## External listing links
+
+`src/lib/listingUrl.ts` → `getExternalListingUrl()` builds the "view listing ↗" link shown next to every address
+(table, grid, and Top Deals leaderboard). It prefers `listing.url` when the provider set one (currently only
+`CsvListingProvider`, since Redfin's CSV export carries a real listing URL per row) and otherwise falls back to a
+Zillow address-search URL built from the listing's address/town/zip. That fallback is a *search*, not a guaranteed
+direct hit — it only resolves to something meaningful when the address is real, which is why `DemoDataBanner`
+(`src/components/DemoDataBanner.tsx`, shown whenever `SyncStatus.provider === "mock"`) exists: it's the honest
+disclosure that the currently-active data is synthetic and these links won't go anywhere real yet.
 
 ## Deployment
 

@@ -3,6 +3,7 @@
 import clsx from "clsx";
 import type { Listing, SortField } from "@/types/listing";
 import { formatCurrency, formatNumber, PROPERTY_TYPE_LABELS, STATUS_LABELS } from "@/lib/format";
+import { getExternalListingUrl } from "@/lib/listingUrl";
 import { DealBadge } from "./DealBadge";
 
 interface ListingsTableProps {
@@ -49,7 +50,15 @@ export function ListingsTable({ listings, sortField, sortDir, onSort }: Listings
       label: "Address",
       render: (l) => (
         <div>
-          <p className="font-medium text-slate-900">{l.address}</p>
+          <a
+            href={getExternalListingUrl(l)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-medium text-slate-900 hover:text-brand-700 hover:underline"
+            title="View listing"
+          >
+            {l.address} ↗
+          </a>
           <p className="text-xs text-slate-500">
             {l.town}, {l.county} · {l.zip}
           </p>
@@ -85,12 +94,21 @@ export function ListingsTable({ listings, sortField, sortDir, onSort }: Listings
         </span>
       ),
     },
-    { field: "dealScore", label: "Deal score", render: (l) => <DealBadge dealScore={l.dealScore} /> },
+    {
+      field: "dealScoreTown",
+      label: "Deal score (Town)",
+      render: (l) => <DealBadge dealScore={l.dealScoreTown} />,
+    },
+    {
+      field: "dealScoreNj",
+      label: "Deal score (NJ)",
+      render: (l) => <DealBadge dealScore={l.dealScoreNj} />,
+    },
   ];
 
   return (
     <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-      <table className="w-full min-w-[1100px] border-collapse text-sm">
+      <table className="w-full min-w-[1300px] border-collapse text-sm">
         <thead className="border-b border-slate-200 bg-slate-50">
           <tr>
             {columns.map((c) => (

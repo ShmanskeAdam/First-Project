@@ -11,7 +11,7 @@ function tierFor(score: number): { label: string; classes: string } {
   return { label: "Below avg", classes: "bg-rose-100 text-rose-700 border-rose-300" };
 }
 
-export function DealBadge({ dealScore }: { dealScore?: DealScoreResult }) {
+export function DealBadge({ dealScore, label }: { dealScore?: DealScoreResult; label?: string }) {
   const [open, setOpen] = useState(false);
   if (!dealScore) return <span className="text-slate-400">—</span>;
   const tier = tierFor(dealScore.score);
@@ -27,12 +27,15 @@ export function DealBadge({ dealScore }: { dealScore?: DealScoreResult }) {
           tier.classes
         )}
       >
+        {label && <span className="font-normal uppercase tracking-wide opacity-70">{label}</span>}
         <span>{dealScore.score}</span>
         <span className="font-normal">{tier.label}</span>
       </button>
       {open && (
         <div className="absolute left-0 top-full z-20 mt-1 w-72 rounded-lg border border-slate-200 bg-white p-3 shadow-lg">
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Why this score</p>
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Why this score{label ? ` (${label})` : ""}
+          </p>
           {dealScore.reasons.length === 0 ? (
             <p className="text-sm text-slate-500">No strong signals either way — priced near comps.</p>
           ) : (
