@@ -58,6 +58,15 @@ export class CsvListingProvider implements ListingProvider {
       const price = Number(col.price >= 0 ? r[col.price] : 0) || 0;
       const statusRaw = (col.status >= 0 ? r[col.status] : "").toUpperCase();
 
+      // Redfin's export gives "days on market" as of the export date (or as of the sale,
+      // for sold rows), not a listed date — back-date listedDate from the right reference
+      // point so ingest.ts's own DOM computation comes out correct instead of every
+      // imported row showing 0 days on market.
+      const domAtExport = col.dom >= 0 ? Number(r[col.dom]) || 0 : 0;
+      const soldDateRaw = col.soldDate >= 0 && r[col.soldDate] ? new Date(r[col.soldDate]) : null;
+      const domReferenceDate = statusRaw.includes("SOLD") && soldDateRaw ? soldDateRaw : new Date();
+      const listedDate = new Date(domReferenceDate.getTime() - domAtExport * 86_400_000);
+
       out.push({
         externalId: (col.mls >= 0 && r[col.mls]) || `redfin-${col.address >= 0 ? r[col.address] : i}`,
         address: col.address >= 0 ? r[col.address] : `Unknown address ${i}`,
@@ -74,8 +83,8 @@ export class CsvListingProvider implements ListingProvider {
         yearBuilt: col.yearBuilt >= 0 ? Number(r[col.yearBuilt]) || null : null,
         propertyType: mapRedfinPropertyType(col.propertyType >= 0 ? r[col.propertyType] : ""),
         status: mapRedfinStatus(statusRaw),
-        listedDate: new Date().toISOString(),
-        soldDate: col.soldDate >= 0 && r[col.soldDate] ? new Date(r[col.soldDate]).toISOString() : null,
+        listedDate: listedDate.toISOString(),
+        soldDate: soldDateRaw ? soldDateRaw.toISOString() : null,
         soldPrice: statusRaw.includes("SOLD") ? price : null,
         hoaFee: null,
         garageSpaces: null,

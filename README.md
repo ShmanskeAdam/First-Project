@@ -55,8 +55,56 @@ recording any price changes and appending a `ListingSnapshot` row per listing �
 charts. Re-run `npm run sync` periodically (cron, a systemd timer, Vercel Cron hitting `POST /api/sync` with the
 `x-sync-secret` header set to `SYNC_SECRET`) to keep history accumulating.
 
-You can also import a Redfin "Download All" CSV export (a feature Redfin explicitly permits) via
-`CsvListingProvider` in `src/lib/providers/csvProvider.ts` — see CLAUDE.md for how to wire it into the sync script.
+## Real data without an API key or account
+
+Redfin lets you export search results to CSV directly from your browser, no login required for a normal-sized
+search (a free Redfin account raises the row cap if you need it, but isn't required to try this):
+
+1. Go to **redfin.com**, search a NNJ town or county (e.g. "Montclair, NJ"), and apply whatever filters you want
+   (for sale, price range, etc.).
+2. On the search results page, find **Download All** (usually near the top-left of the results list) and click it
+   — this downloads a CSV of the current search.
+3. Repeat per town/county to build up coverage — Redfin caps CSV exports at roughly 350 rows without a login, so a
+   region-wide search usually needs several smaller exports rather than one giant one.
+4. Import each CSV:
+   ```bash
+   DATABASE_URL="<your Postgres connection string>" npm run import:csv -- ~/Downloads/redfin_export.csv
+   ```
+   This upserts the rows (by address/MLS#) using the same ingest path a live sync would use, so price-cut
+   detection and snapshot history work identically going forward. Safe to run repeatedly with more exports.
+5. Clear the seeded demo listings so the site doesn't show a mix of fake and real data:
+   ```bash
+   DATABASE_URL="<your Postgres connection string>" npm run clear:mock
+   ```
+6. Set `LISTING_PROVIDER=static` (in `.env` locally, and as a Vercel env var for your deployment). This matters —
+   without it, `LISTING_PROVIDER` defaults to `mock`, and clicking the site's **Refresh** button would silently
+   regenerate fake listings on top of the real ones you just imported. `static` makes Refresh a harmless no-op
+   until you wire up a live provider.
+
+The "demo data" banner disappears automatically once real data has been imported (it keys off which provider ran
+the most recent sync), and "view listing" links will now resolve to the real Redfin page for each property since
+the CSV export includes one.
+
+## Switching to a live API (RentCast)
+
+Set in `.env`:
+
+```
+LISTING_PROVIDER="rentcast"
+RENTCAST_API_KEY="your-key-here"
+```
+
+Get a free-tier key at https://www.rentcast.io/api — this does require creating an account, unlike the CSV path
+above. Then run:
+
+```bash
+npm run sync
+```
+
+This fetches current listings for every configured town (see `src/lib/towns.ts`) and upserts them into the DB,
+recording any price changes and appending a `ListingSnapshot` row per listing — the raw material for the trend
+charts. Re-run `npm run sync` periodically (cron, a systemd timer, Vercel Cron hitting `POST /api/sync` with the
+`x-sync-secret` header set to `SYNC_SECRET`) to keep history accumulating.
 
 ## Manual refresh
 
@@ -74,7 +122,9 @@ the throttle. See `src/app/api/sync/route.ts`.
    https://vercel.com/new.
 3. In the Vercel project's Environment Variables, set:
    - `DATABASE_URL` — the Postgres connection string from step 1
-   - `LISTING_PROVIDER` — `mock` to launch with demo data, or `rentcast` + `RENTCAST_API_KEY` for live data
+   - `LISTING_PROVIDER` — `mock` to launch with demo data, `static` if you've imported real data via a CSV (see
+     "Real data without an API key" above) and don't want Refresh reintroducing mock listings, or `rentcast` +
+     `RENTCAST_API_KEY` for a live API feed
    - `SYNC_SECRET` — a random string, used to protect any cron-triggered `POST /api/sync` calls
 4. Vercel auto-detects the `vercel-build` script in `package.json` (`prisma generate && prisma db push && next build`)
    and uses it instead of `next build`, so the schema is applied to your database on every deploy — no manual
@@ -99,6 +149,8 @@ the throttle. See `src/app/api/sync/route.ts`.
 | `npm run db:seed` | Wipe and reseed mock data |
 | `npm run db:studio` | Prisma Studio, a GUI for the DB |
 | `npm run sync` | Pull fresh listings from the active provider and append history |
+| `npm run import:csv -- <file>` | One-off import of a Redfin CSV export — no API key needed |
+| `npm run clear:mock` | Delete all mock-sourced listings (e.g. before/after a real-data import) |
 | `npm run vercel-build` | What Vercel actually runs: generate client, push schema, build |
 
 ## App structure
@@ -117,7 +169,10 @@ src/
 prisma/
   schema.prisma             # Listing, ListingSnapshot, PriceChange, ScoringConfig, FilterPreset, SyncStatus
   seed.ts                    # mock data generator + historical backfill
-scripts/sync-listings.ts     # provider -> DB sync job (cron entrypoint)
+scripts/
+  sync-listings.ts           # provider -> DB sync job (cron entrypoint)
+  import-csv.ts              # one-off Redfin CSV import (no API key needed)
+  clear-mock-listings.ts     # delete seeded demo listings
 ```
 
 ## Notes

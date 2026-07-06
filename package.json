@@ -15,6 +15,8 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:studio": "prisma studio",
     "sync": "tsx scripts/sync-listings.ts",
+    "import:csv": "tsx scripts/import-csv.ts",
+    "clear:mock": "tsx scripts/clear-mock-listings.ts",
     "vercel-build": "prisma generate && prisma db push --accept-data-loss && next build"
   },
   "prisma": {

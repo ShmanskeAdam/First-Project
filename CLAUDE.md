@@ -44,14 +44,17 @@ Implementations, all in `src/lib/providers/`:
   has no county/bounding-box query), so `fetchListings` requires an explicit `towns` list — the sync script passes
   `TOWN_NAMES` from `src/lib/towns.ts`.
 - **`CsvListingProvider`** (`csvProvider.ts`) — parses a Redfin "Download All" CSV export (a feature Redfin
-  explicitly permits) into `RawListing[]`. Not wired into `getActiveProvider()` by default since it takes a CSV
-  string rather than reading env config; use it directly in a one-off script if you want to bulk-import a Redfin
-  export, e.g.:
-  ```ts
-  const csv = fs.readFileSync("redfin_export.csv", "utf8");
-  const provider = new CsvListingProvider(csv);
-  await ingestRawListings(await provider.fetchListings(), provider.key);
-  ```
+  explicitly permits, and the only real-data path that needs no API key or account) into `RawListing[]`. Not wired
+  into `getActiveProvider()` since it takes a CSV string rather than reading env config; `scripts/import-csv.ts` is
+  the one-off entrypoint (`npm run import:csv -- <file>`), used the same way an interactive session would set it
+  up. Redfin doesn't supply a "listed date," only a "days on market" figure as of export time — `fetchListings`
+  back-dates `listedDate` from that (from the sale date for sold rows, from "now" otherwise) so `ingest.ts`'s own
+  DOM computation comes out correct instead of every imported row reading as freshly listed.
+- **`StaticListingProvider`** (defined inline in `providers/index.ts`) — a no-op provider (`fetchListings` always
+  returns `[]`) selected via `LISTING_PROVIDER=static`. Exists so that after a one-off CSV import, clicking the
+  site's Refresh button doesn't fall through to the "mock" default and silently regenerate fake listings on top of
+  the real ones just imported. `scripts/clear-mock-listings.ts` (`npm run clear:mock`) deletes any leftover
+  mock-sourced rows (cascades to their snapshots/price changes) so a real-data site doesn't show a fake/real mix.
 
 `src/lib/providers/index.ts` → `getActiveProvider()` picks the provider from `LISTING_PROVIDER` (defaults to
 `"mock"`). **Do not build a Zillow scraper** — Zillow's ToS prohibits it. RentCast/RapidAPI resellers, ATTOM, and
