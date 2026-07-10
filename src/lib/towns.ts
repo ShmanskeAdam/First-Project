@@ -83,6 +83,18 @@ export const TOWNS: TownInfo[] = [
   { name: "Hillsborough", county: "Somerset", nearestTransitStation: "Raritan Station" },
 ];
 
+/**
+ * A town as offered to the filter UI. Unlike `TownInfo` this is deliberately
+ * loose (`county` is a plain string), because the real filter options are
+ * derived from whatever towns actually exist in the synced data — which, for
+ * live RentCast data, spans hundreds of NJ municipalities well beyond the
+ * curated `TOWNS` seed list. See `GET /api/towns`.
+ */
+export interface TownOption {
+  name: string;
+  county: string;
+}
+
 export const TOWN_NAMES = TOWNS.map((t) => t.name);
 
 export const COUNTIES = [

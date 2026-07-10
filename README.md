@@ -77,18 +77,29 @@ No Vercel dashboard, no env vars, no redeploy — the key is stored (write-only)
 env-var configuration. Env vars (`LISTING_PROVIDER=rentcast` + `RENTCAST_API_KEY`) still work as an alternative
 for people who prefer them.
 
+### Comprehensive coverage — the whole dataset, every town
+
+- Queries go **per county** (7 counties), and each county **paginates fully** (500/page, RentCast's max, no
+  listing cap) — so the connect-time full sync pulls the *entire* active for-sale inventory of North NJ, every
+  municipality included (Boonton, Mountain Lakes, and hundreds more, not just a curated shortlist).
+- The **town filter options are derived from the data itself** (distinct towns actually present), so every town
+  that has listings is selectable and always filters correctly — no hardcoded town list to fall out of sync with
+  what RentCast returns.
+- **Land-only listings are excluded from Top Deals**: a $1/sqft floor plus a scoring guard mean lots with no
+  house (0 sqft) can never masquerade as underpriced deals.
+
 ### How it stays inside RentCast's free tier (50 requests/month) unattended
 
-- Queries go **per county** (7 counties), not per town (51 towns), paged at RentCast's 500-listing max.
-- The automatic path pulls **one county per calendar day** on a weekly rotation (~30-38 requests/month) — full
-  coverage on a rolling basis, nothing more than a week stale.
+- The automatic path pulls **one county per calendar day** on a weekly rotation — full coverage refreshes on a
+  rolling basis. (A full pull of all of North NJ is roughly 20-30 requests, so it fits in a single month with
+  room for daily refreshes; the free tier can hold the whole dataset, it just can't re-pull all of it daily.)
 - A **daily guard** makes repeat Refresh clicks free: once today's county has synced, further clicks are no-ops
   with an explanatory note ("Today's live data is already in").
 - A **monthly budget meter** (default 40, override with `RENTCAST_MONTHLY_BUDGET` on a paid plan) is tracked in
-  the DB and hard-stops syncing before the cap. Requests are *atomically reserved* before any API call via a
-  single conditional SQL `UPDATE`, so the monthly total can never exceed the budget even if many syncs fire at the
-  exact same instant — this is a provable invariant, not just a check-before-write. Current usage is shown on the
-  Settings page.
+  the DB. Each API request is **atomically reserved** — a single conditional SQL `UPDATE` before every network
+  call — so the monthly total can never exceed the budget even under concurrent syncs, and pagination simply
+  stops mid-run if the budget is hit (the rest fills in on later syncs). This is a provable invariant, not a
+  check-before-write. Current usage is shown on the Settings page.
 - Duplicates can't happen: every listing upserts by RentCast's own listing ID.
 
 CLI equivalents exist for both modes: `npm run sync` (today's rotating county) and `npm run sync:full` (all 7

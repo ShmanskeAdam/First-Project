@@ -18,7 +18,7 @@ import { FilterPanel } from "@/components/FilterPanel";
 import { ListingHistoryModal } from "@/components/ListingHistoryModal";
 import { useRefresh } from "@/context/RefreshContext";
 import type { Listing, ListingFilters, FilterPreset } from "@/types/listing";
-import type { TownInfo } from "@/lib/towns";
+import type { TownOption } from "@/lib/towns";
 
 const LIMIT = 50;
 
@@ -51,7 +51,7 @@ function RecentCutsPanel({ cuts }: { cuts: RecentCut[] }) {
 }
 
 export default function DealsPage() {
-  const [towns, setTowns] = useState<TownInfo[]>([]);
+  const [towns, setTowns] = useState<TownOption[]>([]);
   const [filters, setFilters] = useState<ListingFilters>({});
   const [presets, setPresets] = useState<FilterPreset[]>([]);
   const [rankBy, setRankBy] = useState<"town" | "nj">("town");

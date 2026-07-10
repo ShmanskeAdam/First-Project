@@ -11,7 +11,7 @@ import { formatCompactCurrency } from "@/lib/format";
 import { useRefresh } from "@/context/RefreshContext";
 import type { TrendPoint } from "@/app/api/analytics/trends/route";
 import type { TownComparisonRow } from "@/app/api/analytics/comparison/route";
-import type { TownInfo } from "@/lib/towns";
+import type { TownOption } from "@/lib/towns";
 import type { PropertyType } from "@/types/listing";
 
 const YEAR_OPTIONS = [1, 3, 5];
@@ -24,7 +24,7 @@ const PROPERTY_TYPES: { value: PropertyType | ""; label: string }[] = [
 ];
 
 export default function AnalyticsPage() {
-  const [towns, setTowns] = useState<TownInfo[]>([]);
+  const [towns, setTowns] = useState<TownOption[]>([]);
   const [selectedTowns, setSelectedTowns] = useState<string[]>([]);
   const [years, setYears] = useState(3);
   const [propertyType, setPropertyType] = useState<PropertyType | "">("");

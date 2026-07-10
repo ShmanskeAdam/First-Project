@@ -59,19 +59,22 @@ export async function getRentcastUsage(): Promise<RentcastUsage> {
 }
 
 /**
- * Atomically reserve `estimate` requests against this month's budget *before*
- * any API call is made. This is the hard guarantee that monthly usage can
- * never exceed the budget: the whole check-and-increment is a single
- * conditional `UPDATE`, so Postgres row locking serializes concurrent syncs —
- * of two callers racing at the threshold, at most one can push the counter
- * across it; the other's WHERE clause fails and it reserves nothing. The
- * month-rollover reset is folded into the same statement so it's atomic too.
+ * Atomically reserve **one** RentCast API request against this month's budget,
+ * called immediately before each network request as a sync paginates. Returns
+ * `true` if the request is allowed, `false` if it would exceed the budget (the
+ * caller then stops paginating).
  *
- * Returns `ok: false` (reserving nothing) when the reservation would exceed
- * budget. The reserved amount is a worst-case estimate; call
- * `reconcileRentcastUsage` afterwards to settle it against the real count.
+ * This is the hard "never overrun the free tier" guarantee: the whole
+ * check-and-increment is a single conditional `UPDATE`, so Postgres row
+ * locking serializes concurrent syncs — of two callers racing at the
+ * threshold, at most one can push the counter across it; the other's WHERE
+ * clause matches nothing and it reserves nothing. The month-rollover reset is
+ * folded into the same statement, so it's atomic too. Because exactly one
+ * request is reserved per actual network call, the metered count equals real
+ * usage with no estimate/reconcile gap — which is what lets a sync paginate an
+ * entire county with no fixed page cap while staying provably under budget.
  */
-export async function reserveRentcastRequests(estimate: number): Promise<{ ok: boolean; usage: RentcastUsage }> {
+export async function reserveRentcastRequest(): Promise<boolean> {
   const month = currentMonthKey();
   const budget = getMonthlyBudget();
 
@@ -82,34 +85,12 @@ export async function reserveRentcastRequests(estimate: number): Promise<{ ok: b
   const affected = await prisma.$executeRaw`
     UPDATE "AppConfig"
     SET "requestsThisMonth" =
-          (CASE WHEN "requestMonth" = ${month} THEN "requestsThisMonth" ELSE 0 END) + ${estimate},
+          (CASE WHEN "requestMonth" = ${month} THEN "requestsThisMonth" ELSE 0 END) + 1,
         "requestMonth" = ${month},
         "updatedAt" = NOW()
     WHERE "id" = 'default'
-      AND (CASE WHEN "requestMonth" = ${month} THEN "requestsThisMonth" ELSE 0 END) + ${estimate} <= ${budget}
+      AND (CASE WHEN "requestMonth" = ${month} THEN "requestsThisMonth" ELSE 0 END) + 1 <= ${budget}
   `;
 
-  const usage = await getRentcastUsage();
-  return { ok: affected > 0, usage };
-}
-
-/**
- * Settle a prior `reserveRentcastRequests(reserved)` against the `actual`
- * number of API requests the sync really made (usually fewer, since the
- * reserved figure is a worst-case estimate — and fewer still if the fetch
- * failed partway). Adjusts the counter by `actual - reserved`, clamped at 0.
- * The `requestMonth` guard means a rollover between reserve and reconcile
- * simply leaves the estimate counted in the old month (conservative — it can
- * only ever over-count, never under-count).
- */
-export async function reconcileRentcastUsage(reserved: number, actual: number): Promise<void> {
-  const delta = actual - reserved;
-  if (delta === 0) return;
-  const month = currentMonthKey();
-  await prisma.$executeRaw`
-    UPDATE "AppConfig"
-    SET "requestsThisMonth" = GREATEST(0, "requestsThisMonth" + ${delta}),
-        "updatedAt" = NOW()
-    WHERE "id" = 'default' AND "requestMonth" = ${month}
-  `;
+  return affected > 0;
 }

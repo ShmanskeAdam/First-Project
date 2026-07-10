@@ -17,12 +17,12 @@ import {
 } from "@/lib/apiClient";
 import { useRefresh } from "@/context/RefreshContext";
 import type { Listing, ListingFilters, PaginatedListings, SortField, FilterPreset } from "@/types/listing";
-import type { TownInfo } from "@/lib/towns";
+import type { TownOption } from "@/lib/towns";
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100];
 
 export default function ListingsPage() {
-  const [towns, setTowns] = useState<TownInfo[]>([]);
+  const [towns, setTowns] = useState<TownOption[]>([]);
   const [filters, setFilters] = useState<ListingFilters>({});
   const [presets, setPresets] = useState<FilterPreset[]>([]);
   const [view, setView] = useState<"table" | "grid">("table");

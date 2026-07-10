@@ -1,5 +1,5 @@
 import type { Listing, ListingFilters, ListingQuery, PaginatedListings, FilterPreset, ScoringConfig } from "@/types/listing";
-import type { TownInfo } from "@/lib/towns";
+import type { TownOption } from "@/lib/towns";
 import type { TrendPoint } from "@/app/api/analytics/trends/route";
 import type { TownComparisonRow } from "@/app/api/analytics/comparison/route";
 import type { SyncStatusPayload } from "@/lib/syncStatus";
@@ -25,7 +25,7 @@ export async function fetchListings(query: ListingQuery): Promise<PaginatedListi
   return res.json();
 }
 
-export async function fetchTowns(): Promise<{ towns: TownInfo[]; counties: string[] }> {
+export async function fetchTowns(): Promise<{ towns: TownOption[]; counties: string[] }> {
   const res = await fetch("/api/towns");
   if (!res.ok) throw new Error("Failed to fetch towns");
   return res.json();

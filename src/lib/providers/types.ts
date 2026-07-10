@@ -45,8 +45,15 @@ export interface ListingProviderQuery {
   counties?: string[];
   /** Max number of results this call should return (providers may page internally). */
   limit?: number;
-  /** Max pages to paginate through per county/town when a provider supports it (default provider-specific). */
+  /** Hard per-area page cap (mainly a test/safety override); rate-limited providers otherwise paginate fully. */
   maxPagesPerArea?: number;
+  /**
+   * Called by rate-limited providers immediately before each network request.
+   * Return `false` to deny it (the provider stops paginating and returns what
+   * it has). This is how the RentCast monthly budget gates unbounded
+   * pagination without the provider knowing anything about the quota system.
+   */
+  requestGate?: () => Promise<boolean>;
 }
 
 /**

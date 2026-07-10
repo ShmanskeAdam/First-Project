@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import clsx from "clsx";
 import { RangeSlider } from "./RangeSlider";
-import type { TownInfo } from "@/lib/towns";
+import type { TownOption } from "@/lib/towns";
 import type { ListingFilters, FilterPreset, PropertyType } from "@/types/listing";
 import { PROPERTY_TYPE_LABELS, formatCompactCurrency } from "@/lib/format";
 
@@ -21,7 +21,7 @@ const BOUNDS = {
 };
 
 interface FilterPanelProps {
-  towns: TownInfo[];
+  towns: TownOption[];
   filters: ListingFilters;
   onChange: (filters: ListingFilters) => void;
   presets: FilterPreset[];
@@ -72,7 +72,7 @@ export function FilterPanel({
   );
 
   const townsByCounty = useMemo(() => {
-    const map = new Map<string, TownInfo[]>();
+    const map = new Map<string, TownOption[]>();
     for (const t of filteredTowns) {
       const arr = map.get(t.county);
       if (arr) arr.push(t);

@@ -11,6 +11,10 @@ import { scoreAllActiveListings } from "@/lib/scoring/service";
  */
 export async function GET(req: NextRequest) {
   const filters = parseListingFilters(req.nextUrl.searchParams);
+  // Enforce a $1/sqft floor so land-only listings (no house → sqft 0 →
+  // pricePerSqft 0) never surface as "deals". A user can still raise the floor
+  // above 1 via the filter, but never drop it below 1 here.
+  filters.minPricePerSqft = Math.max(1, filters.minPricePerSqft ?? 1);
   const where = { ...buildListingWhere(filters), status: "ACTIVE" as const };
   const limit = Math.min(200, Math.max(1, Number(req.nextUrl.searchParams.get("limit") ?? 50)));
   const rankBy = req.nextUrl.searchParams.get("rankBy") === "nj" ? "nj" : "town";

@@ -4,11 +4,12 @@ import type { ListingProvider, ListingProviderQuery, RawListing } from "./types"
 
 const RENTCAST_BASE_URL = "https://api.rentcast.io/v1";
 const PAGE_SIZE = 500; // RentCast's max `limit` per request — fewer pages = fewer billed calls.
-// Up to 2 pages per county by default: page 2 is only fetched when page 1 comes back
-// completely full (exactly 500 rows), so most counties cost 1 request and only the
-// largest (Bergen/Essex-sized inventory) cost 2. The monthly budget meter in
-// src/lib/appConfig.ts is the hard backstop either way.
-const DEFAULT_MAX_PAGES_PER_AREA = 2;
+// No artificial listing cap: each county paginates until RentCast returns a
+// non-full page (county exhausted). The real limiter is `query.requestGate`
+// (the monthly budget), which can stop pagination mid-county; this constant is
+// only a runaway-loop safety bound (20k listings/county — far beyond any real
+// NJ county's active for-sale inventory).
+const SAFETY_MAX_PAGES_PER_AREA = 40;
 
 /** Thrown on 401/403 so callers can distinguish "bad key" from transient failures. */
 export class RentCastAuthError extends Error {}
@@ -18,12 +19,13 @@ export class RentCastAuthError extends Error {}
  * to be set — see .env.example.
  *
  * Queries by **county** (via `county` + `state` params), not by individual town —
- * RentCast's free tier caps out at 50 requests/month, and this app tracks 51 towns
- * across only 7 counties, so a per-town query (51 requests) would blow the entire
- * monthly quota in a single sync. Per-county queries (7 requests for a full sync)
- * make that math survivable; see `src/lib/syncRotation.ts` for how the daily
- * automatic Refresh click stays under quota by only syncing one county per day
- * rather than all 7 every time.
+ * a per-town query (51 towns) would cost far more requests than per-county
+ * (7 counties) for the same coverage, and RentCast's free tier is only 50
+ * requests/month. Each county paginates fully (no listing cap), so the entire
+ * active for-sale inventory of North NJ is pulled; `query.requestGate` (wired
+ * to the monthly budget in runSync) is what bounds total requests, stopping
+ * pagination mid-run if the budget is hit. `src/lib/syncRotation.ts` spreads
+ * the daily automatic refresh across one county per day.
  *
  * Docs: GET /listings/sale — filter by county + state, paginate with offset/limit
  * (limit accepts up to 500; each page is a separate billed request).
@@ -48,13 +50,20 @@ export class RentCastListingProvider implements ListingProvider {
       );
     }
 
-    const maxPages = query?.maxPagesPerArea ?? DEFAULT_MAX_PAGES_PER_AREA;
+    const maxPages = query?.maxPagesPerArea ?? SAFETY_MAX_PAGES_PER_AREA;
     const results: RawListing[] = [];
     this.lastFetchRequestCount = 0;
 
     for (const county of counties) {
       let offset = 0;
       for (let page = 0; page < maxPages; page++) {
+        // Budget gate: ask permission for each request. A denial (monthly
+        // budget exhausted) stops pagination cleanly — the county keeps
+        // whatever pages it already pulled, the rest come on a later sync.
+        if (query?.requestGate && !(await query.requestGate())) {
+          return results;
+        }
+
         const params = new URLSearchParams({
           county,
           state: "NJ",

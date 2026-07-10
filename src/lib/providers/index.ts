@@ -77,16 +77,16 @@ export function getDefaultSyncQuery(provider: ListingProvider): ListingProviderQ
 }
 
 /**
- * The query for a deliberate, one-time full sync across all of North NJ in a
- * single run (`npm run sync:full`) — costs far more of RentCast's monthly
- * quota than the daily rotation, so it's opt-in only, not the automatic path.
+ * The query for a deliberate full sync across all of North NJ in a single run
+ * (`npm run sync:full`, and the Settings-page connect flow). Every county
+ * paginates fully — no listing cap — so the site gets the complete active
+ * for-sale dataset. `runSync` attaches the budget `requestGate`, so this can
+ * never exceed the monthly quota; if the budget runs out mid-pull, it stops
+ * and the remaining counties fill in on subsequent syncs.
  */
 export function getFullSyncQuery(provider: ListingProvider): ListingProviderQuery {
   if (provider.key === "rentcast") {
-    // 2 pages/county (1,000 listings) covers realistic active inventory while
-    // keeping the worst case at 14 requests — small enough that the connect-time
-    // full sync plus a month of daily rotation still fits the free tier.
-    return { counties: COUNTIES.slice(), maxPagesPerArea: 2 };
+    return { counties: COUNTIES.slice() };
   }
   return { towns: TOWN_NAMES };
 }

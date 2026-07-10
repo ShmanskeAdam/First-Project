@@ -1,7 +1,7 @@
 "use client";
 
 import clsx from "clsx";
-import type { TownInfo } from "@/lib/towns";
+import type { TownOption } from "@/lib/towns";
 
 export function TownMultiSelect({
   towns,
@@ -9,7 +9,7 @@ export function TownMultiSelect({
   onChange,
   max,
 }: {
-  towns: TownInfo[];
+  towns: TownOption[];
   selected: string[];
   onChange: (towns: string[]) => void;
   max?: number;

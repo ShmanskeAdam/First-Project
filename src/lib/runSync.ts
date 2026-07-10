@@ -2,13 +2,10 @@ import {
   getActiveProvider,
   getDefaultSyncQuery,
   getFullSyncQuery,
-  RentCastListingProvider,
-  type RawListing,
 } from "@/lib/providers";
-import { COUNTIES } from "@/lib/towns";
 import { ingestRawListings, clearMockListingsIfLiveSource } from "@/lib/ingest";
 import { getSyncStatus, recordSyncStatus } from "@/lib/syncStatus";
-import { reserveRentcastRequests, reconcileRentcastUsage, getRentcastUsage } from "@/lib/appConfig";
+import { reserveRentcastRequest, getRentcastUsage } from "@/lib/appConfig";
 import { getTodaysCounty } from "@/lib/syncRotation";
 import type { SyncStatusPayload } from "@/lib/syncStatus";
 
@@ -39,19 +36,17 @@ function sameUtcDay(a: Date, b: Date): boolean {
  *    today (UTC), the run becomes a no-op with an explanatory note instead of
  *    spending another API request. Any number of Refresh clicks per day costs
  *    at most one county's worth of requests. (Best-effort efficiency layer.)
- * 2. **Monthly budget** (all modes): requests are *atomically reserved* before
- *    any API call (see `reserveRentcastRequests`), then reconciled down to the
- *    real count afterward. Because the reservation is a single conditional DB
- *    UPDATE, the month's total can never exceed the budget even under
- *    concurrent syncs — this is the hard "never overrun the free tier"
- *    guarantee, independent of the daily guard's timing.
+ * 2. **Monthly budget** (all modes): a per-request gate (`reserveRentcastRequest`)
+ *    is attached to the provider query and atomically reserves exactly one
+ *    request before each network call. Because each reservation is a single
+ *    conditional DB UPDATE, the month's total can never exceed the budget even
+ *    under concurrent syncs, and pagination can run unbounded (pulling a whole
+ *    county) while still being provably capped. This is the hard "never
+ *    overrun the free tier" guarantee, independent of the daily guard.
  */
 export async function runSync(mode: "daily" | "full" = "daily"): Promise<SyncRunResult> {
   const provider = await getActiveProvider();
   const isRentcast = provider.key === "rentcast";
-  // Worst-case request estimate reserved up front: up to 2 pages per county.
-  const estimate = mode === "full" ? COUNTIES.length * 2 : 2;
-  let reserved = false;
 
   if (isRentcast) {
     if (mode === "daily") {
@@ -70,8 +65,10 @@ export async function runSync(mode: "daily" | "full" = "daily"): Promise<SyncRun
       }
     }
 
-    const { ok, usage } = await reserveRentcastRequests(estimate);
-    if (!ok) {
+    // Friendly early-out (not the guarantee — the per-request gate is): if the
+    // budget is already spent, don't even start.
+    const usage = await getRentcastUsage();
+    if (usage.used >= usage.budget) {
       const status = await getSyncStatus();
       return {
         ...status,
@@ -80,35 +77,28 @@ export async function runSync(mode: "daily" | "full" = "daily"): Promise<SyncRun
         note: `Monthly RentCast request budget reached (${usage.used}/${usage.budget}). Syncs resume automatically next month.`,
       };
     }
-    reserved = true;
   }
 
-  let raws: RawListing[];
-  try {
-    const query = mode === "full" ? getFullSyncQuery(provider) : getDefaultSyncQuery(provider);
-    raws = await provider.fetchListings(query);
-  } finally {
-    // Settle the reservation against the requests actually made — refunding the
-    // usual over-estimate, and also refunding correctly if the fetch threw
-    // partway (lastFetchRequestCount reflects real attempts either way).
-    if (reserved && provider instanceof RentCastListingProvider) {
-      await reconcileRentcastUsage(estimate, provider.lastFetchRequestCount);
-    }
-  }
+  const baseQuery = mode === "full" ? getFullSyncQuery(provider) : getDefaultSyncQuery(provider);
+  // Attach the atomic budget gate for RentCast; other providers ignore it.
+  const query = isRentcast ? { ...baseQuery, requestGate: reserveRentcastRequest } : baseQuery;
+  const raws = await provider.fetchListings(query);
 
   const results = await ingestRawListings(raws, provider.key);
   const clearedMockListings = await clearMockListingsIfLiveSource(provider.key);
   const status = await recordSyncStatus(provider.key, raws.length, results.length);
 
   let note: string | null = null;
-  if (clearedMockListings > 0) {
-    note = `Cleared ${clearedMockListings.toLocaleString()} demo listings — now showing real data.`;
-  } else if (isRentcast) {
+  if (isRentcast) {
     const usage = await getRentcastUsage();
+    const cleared = clearedMockListings > 0 ? ` Cleared ${clearedMockListings.toLocaleString()} demo listings.` : "";
+    const budgetHit = usage.used >= usage.budget ? " Monthly API budget now reached; more will sync next month." : "";
     note =
       mode === "full"
-        ? `Pulled all 7 counties (${raws.length.toLocaleString()} listings). API budget used: ${usage.used}/${usage.budget} this month.`
-        : `Pulled ${getTodaysCounty()} County (${raws.length.toLocaleString()} listings).`;
+        ? `Pulled ${raws.length.toLocaleString()} live listings across North NJ.${cleared} API budget used: ${usage.used}/${usage.budget} this month.${budgetHit}`
+        : `Pulled ${getTodaysCounty()} County (${raws.length.toLocaleString()} listings).${cleared}${budgetHit}`;
+  } else if (clearedMockListings > 0) {
+    note = `Cleared ${clearedMockListings.toLocaleString()} demo listings — now showing real data.`;
   }
 
   return { ...status, clearedMockListings, skipped: false, note };

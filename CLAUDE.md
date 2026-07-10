@@ -46,19 +46,18 @@ Implementations, all in `src/lib/providers/`:
   as a fallback.) The key is write-only: `GET /api/settings` reports only `rentcastConfigured` + a last-4 hint,
   never the key. Connecting validates the key by immediately running a full sync — a 401/403 raises
   `RentCastAuthError`, which the settings route catches to un-store the bad key and report it.
-  Calls `GET /listings/sale` **per county** (`county` + `state` params), not per town — RentCast's free tier caps
-  out at 50 requests/month, and this app tracks 51 towns across only 7 counties, so a per-town query would blow
-  the entire monthly quota in a single sync. `fetchListings` requires an explicit `counties` list
-  (`ListingProviderQuery.counties`) and paginates via `limit`/`offset` (500/page, RentCast's max) up to
-  `maxPagesPerArea` pages per county (default 2 — page 2 is only fetched when page 1 comes back exactly full).
-  The provider exposes `lastFetchRequestCount`, which `runSync` meters into the monthly budget (below).
-  - `getDefaultSyncQuery()` (`providers/index.ts`) is what the automatic path (Refresh button, `npm run sync`,
-    cron) actually uses: **one county per calendar day**, picked deterministically by `src/lib/syncRotation.ts`
-    (`getTodaysCounty()`, a `dayOfYear % 7` index into `COUNTIES`). That's 1-2 requests/day ≈ 30-38/month.
-    Full North NJ coverage still happens, just on a rolling ~weekly basis per county rather than instantly.
-  - `getFullSyncQuery()` is the opt-in alternative used by the connect flow and `npm run sync:full`: all 7
-    counties at once with `maxPagesPerArea: 2` (≤14 requests). Costs more quota per run, so it's deliberately not
-    part of the automatic/daily path.
+  Calls `GET /listings/sale` **per county** (`county` + `state` params), not per town — fewer requests for the
+  same coverage. `fetchListings` requires an explicit `counties` list (`ListingProviderQuery.counties`) and
+  **paginates each county fully** (500/page, RentCast's max, no listing cap — a `SAFETY_MAX_PAGES_PER_AREA=40`
+  bound only guards against a runaway loop). The real limiter is `ListingProviderQuery.requestGate`: an
+  optional `() => Promise<boolean>` the provider calls before *every* network request; `runSync` wires it to the
+  atomic budget reservation, so a denial stops pagination cleanly mid-county (the rest fills in on a later sync).
+  `lastFetchRequestCount` exposes how many pages were fetched.
+  - `getDefaultSyncQuery()` (`providers/index.ts`) is the automatic path (Refresh button, `npm run sync`, cron):
+    **one county per calendar day**, picked deterministically by `src/lib/syncRotation.ts` (`getTodaysCounty()`,
+    a `dayOfYear % 7` index into `COUNTIES`). Full North NJ coverage refreshes on a rolling ~weekly basis.
+  - `getFullSyncQuery()` (connect flow + `npm run sync:full`): all 7 counties, each paginated fully — pulls the
+    entire active for-sale dataset (~20-30 requests total, comfortably one month's budget). Gated the same way.
 - **`CsvListingProvider`** (`csvProvider.ts`) — parses a Redfin "Download All" CSV export (a feature Redfin
   explicitly permits, and the only real-data path that needs no API key or account) into `RawListing[]`. Not wired
   into `getActiveProvider()` since it takes a CSV string rather than reading env config; `scripts/import-csv.ts` is
@@ -103,15 +102,16 @@ CLI scripts. It layers RentCast-only quota guards on top of fetch→ingest→cle
 
 - **Daily guard** (mode "daily"): if a RentCast sync already succeeded today (UTC), the run is a no-op returning
   `skipped: true` and a human note — so unlimited Refresh clicks cost at most one county's requests per day.
-- **Monthly budget**: `runSync` *atomically reserves* the worst-case request count via
-  `reserveRentcastRequests` (a single conditional `UPDATE "AppConfig" SET requestsThisMonth = ... WHERE ... <=
-  budget`, with month-rollover reset folded in) *before* any API call, then settles it against the real count
-  with `reconcileRentcastUsage` afterward. Because the check-and-increment is one atomic statement, the monthly
-  total provably can't exceed the budget (default 40, env `RENTCAST_MONTHLY_BUDGET`) even under concurrent syncs —
-  Postgres row locking serializes racing reservations. Over-budget runs return `skipped: true`. This atomic
-  reserve is the hard "cannot overrun the free tier" guarantee; the daily guard above is a best-effort efficiency
-  layer on top. (See the concurrency test evidence in commit history: 10 simultaneous reserves against budget 10
-  yield exactly 3 successes.)
+- **Monthly budget**: `runSync` attaches `reserveRentcastRequest` (`appConfig.ts`) as the query's `requestGate`.
+  It reserves **exactly one** request per network call via a single conditional `UPDATE "AppConfig" SET
+  requestsThisMonth = ... WHERE ... + 1 <= budget` (month-rollover reset folded in). Because each check-and-
+  increment is one atomic statement, the monthly total provably can't exceed the budget (default 40, env
+  `RENTCAST_MONTHLY_BUDGET`) even under concurrent syncs — Postgres row locking serializes racing reservations —
+  and, since it's reserved per actual request (no worst-case estimate), pagination can run unbounded and simply
+  stops when the gate denies. `runSync` also does a friendly upfront `used >= budget` check to return
+  `skipped: true` before starting. This per-request gate is the hard "cannot overrun the free tier" guarantee; the
+  daily guard above is a best-effort efficiency layer on top. (Concurrency proof: 12 simultaneous reserves against
+  budget 5 yield exactly 5 successes — see the batch's verification test.)
 - Every result carries a `note` string that `RefreshContext` surfaces next to the Refresh button ("Pulled Essex
   County (512 listings)", "Today's live data is already in…", "Cleared 732 demo listings…").
 
@@ -198,6 +198,10 @@ picks; both scores are always included in the response regardless of ranking cho
 Weights are tunable from the Settings page (`src/app/settings/page.tsx` → `PUT /api/settings`) and take effect on
 the very next request — nothing is cached or requires a restart. The same weights apply to both scopes.
 
+**Land-only listings** (no house → `sqft` 0 → `pricePerSqft` 0) are kept out of deals two ways: `/api/deals`
+enforces `minPricePerSqft = max(1, …)` on the query, and `scoreListing` neutralizes the two $/sqft-based
+components when `sqft <= 0` (a `hasFloorArea` guard) so a 0-sqft lot can't read as "~100% below comps" anywhere.
+
 ## Filters
 
 `src/lib/filters.ts` is the single source of truth for the `ListingFilters` shape, query-string parsing
@@ -212,10 +216,18 @@ The filter panel is mobile-responsive: below `lg` it collapses behind a "☰ Fil
 count) that opens the panel as a full-screen drawer — that disclosure state lives inside `FilterPanel` itself, so
 pages don't duplicate it.
 
+The **town filter options are data-derived, not hardcoded**: `GET /api/towns` returns the distinct `(town,
+county)` pairs actually present in `Listing` (a `groupBy`), falling back to the curated `TOWNS` list only when the
+DB is empty. This is what makes town filtering work with live RentCast data — which spans hundreds of NJ
+municipalities well beyond the 51-town seed list — since every option is by construction an exact stored value.
+The client type for these is `TownOption` (`{ name, county }`), deliberately looser than `TownInfo`.
+
 ## Adding a town
 
-Add one entry to `TOWNS` in `src/lib/towns.ts` (name, county, nearest transit station) — the filter panel, mock
-data generator, and town-comparison chart all read from that single list.
+`TOWNS` in `src/lib/towns.ts` (name, county, nearest transit station) now seeds only the **mock** data generator
+and the transit-proximity lookup (`getTownInfo`) — the live filter list comes from the data (see above), so you no
+longer need to touch `TOWNS` for real RentCast towns to appear. Add an entry here only to extend the demo dataset
+or add a transit-station mapping.
 
 ## Secondary analysis endpoints & UI
 

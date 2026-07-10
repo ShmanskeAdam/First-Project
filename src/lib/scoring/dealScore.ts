@@ -196,11 +196,19 @@ export function scoreListing(listing: ScoringInput, index: CompIndex, config: Sc
   const reasons: DealScoreReason[] = [];
   const scopeText = SCOPE_LABEL[scope].replace("{town}", listing.town);
 
+  // A listing with no floor area (land / no house) has a meaningless
+  // pricePerSqft of 0, which would otherwise read as "~100% below comps" and
+  // score as a fake great deal. Neutralize the two $/sqft-based components for
+  // these so land can never surface as a deal (belt-and-suspenders with the
+  // $1/sqft floor the Top Deals endpoint enforces on the query side).
+  const hasFloorArea = listing.sqft > 0 && listing.pricePerSqft > 0;
+
   // 1. Price/sqft vs. comparable active listings.
   const cohort = index.activeCohortFor(listing, scope);
-  const pctBelowAvgPpsf = cohort.avgPricePerSqft > 0 ? (cohort.avgPricePerSqft - listing.pricePerSqft) / cohort.avgPricePerSqft : 0;
+  const pctBelowAvgPpsf =
+    hasFloorArea && cohort.avgPricePerSqft > 0 ? (cohort.avgPricePerSqft - listing.pricePerSqft) / cohort.avgPricePerSqft : 0;
   const ppsfComponent = pctBelowToComponent(pctBelowAvgPpsf);
-  if (Math.abs(pctBelowAvgPpsf) >= 0.08) {
+  if (hasFloorArea && Math.abs(pctBelowAvgPpsf) >= 0.08) {
     reasons.push({
       label: pctBelowAvgPpsf > 0 ? "Priced below comps" : "Priced above comps",
       detail: `${Math.abs(Math.round(pctBelowAvgPpsf * 100))}% ${pctBelowAvgPpsf > 0 ? "below" : "above"} average $/sqft for comparable ${listing.propertyType.toLowerCase().replace("_", "-")} homes ${scopeText}`,
@@ -251,9 +259,11 @@ export function scoreListing(listing: ScoringInput, index: CompIndex, config: Sc
   // 4. Price relative to recent comparable sold prices.
   const soldCohort = index.soldCohortFor(listing, scope);
   const pctBelowSoldAvg =
-    soldCohort.avgSoldPricePerSqft > 0 ? (soldCohort.avgSoldPricePerSqft - listing.pricePerSqft) / soldCohort.avgSoldPricePerSqft : 0;
-  const compSalesComponent = soldCohort.count > 0 ? pctBelowToComponent(pctBelowSoldAvg) : 0.5;
-  if (soldCohort.count > 0 && Math.abs(pctBelowSoldAvg) >= 0.08) {
+    hasFloorArea && soldCohort.avgSoldPricePerSqft > 0
+      ? (soldCohort.avgSoldPricePerSqft - listing.pricePerSqft) / soldCohort.avgSoldPricePerSqft
+      : 0;
+  const compSalesComponent = hasFloorArea && soldCohort.count > 0 ? pctBelowToComponent(pctBelowSoldAvg) : 0.5;
+  if (hasFloorArea && soldCohort.count > 0 && Math.abs(pctBelowSoldAvg) >= 0.08) {
     reasons.push({
       label: pctBelowSoldAvg > 0 ? "Below recent comp sales" : "Above recent comp sales",
       detail: `${Math.abs(Math.round(pctBelowSoldAvg * 100))}% ${pctBelowSoldAvg > 0 ? "below" : "above"} the average $/sqft of ${soldCohort.count} comparable sale${soldCohort.count === 1 ? "" : "s"} ${scopeText} in the last ${config.compSaleLookbackMonths} months`,
