@@ -12,7 +12,13 @@ const STATUS_CLASSES: Record<string, string> = {
   SOLD: "bg-slate-200 text-slate-600",
 };
 
-export function ListingsGrid({ listings }: { listings: Listing[] }) {
+export function ListingsGrid({
+  listings,
+  onShowHistory,
+}: {
+  listings: Listing[];
+  onShowHistory?: (listing: Listing) => void;
+}) {
   if (listings.length === 0) {
     return (
       <div className="rounded-lg border border-slate-200 bg-white py-16 text-center text-slate-400">
@@ -36,6 +42,11 @@ export function ListingsGrid({ listings }: { listings: Listing[] }) {
               >
                 {l.address} ↗
               </a>
+              {l.status === "ACTIVE" && l.daysOnMarket <= 7 && (
+                <span className="ml-1.5 rounded bg-emerald-600 px-1 py-0.5 align-middle text-[10px] font-bold text-white">
+                  NEW
+                </span>
+              )}
               <p className="text-xs text-slate-500">
                 {l.town}, {l.county}
               </p>
@@ -61,9 +72,19 @@ export function ListingsGrid({ listings }: { listings: Listing[] }) {
             )}
           </div>
 
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <DealBadge dealScore={l.dealScoreTown} label="Town" />
             <DealBadge dealScore={l.dealScoreNj} label="NJ" />
+            {onShowHistory && (
+              <button
+                type="button"
+                onClick={() => onShowHistory(l)}
+                className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+                title="Price & market history"
+              >
+                📈 History
+              </button>
+            )}
           </div>
         </div>
       ))}

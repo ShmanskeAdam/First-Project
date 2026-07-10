@@ -47,6 +47,12 @@ function Section({ title, children, defaultOpen = true }: { title: string; child
   );
 }
 
+/** How many filters are actively set — shown on the mobile "Filters" button. */
+function countActiveFilters(filters: ListingFilters): number {
+  return Object.values(filters).filter((v) => v !== undefined && v !== null && v !== "" && (!Array.isArray(v) || v.length > 0))
+    .length;
+}
+
 export function FilterPanel({
   towns,
   filters,
@@ -58,6 +64,7 @@ export function FilterPanel({
 }: FilterPanelProps) {
   const [townSearch, setTownSearch] = useState("");
   const [presetName, setPresetName] = useState("");
+  const [mobileOpen, setMobileOpen] = useState(false);
 
   const filteredTowns = useMemo(
     () => towns.filter((t) => t.name.toLowerCase().includes(townSearch.toLowerCase())),
@@ -84,17 +91,50 @@ export function FilterPanel({
     set(key, (next.length ? next : undefined) as ListingFilters[typeof key]);
   }
 
+  const activeCount = countActiveFilters(filters);
+
   return (
-    <aside className="w-80 shrink-0 rounded-lg border border-slate-200 bg-white p-4">
+    <>
+      {/* Mobile: filters live behind a toggle so the listings aren't pushed off-screen. */}
+      <button
+        type="button"
+        onClick={() => setMobileOpen(true)}
+        className="mb-3 inline-flex items-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 lg:hidden"
+      >
+        ☰ Filters
+        {activeCount > 0 && (
+          <span className="rounded-full bg-brand-600 px-1.5 py-0.5 text-xs font-semibold text-white">{activeCount}</span>
+        )}
+      </button>
+
+      <aside
+        className={clsx(
+          "w-80 shrink-0 rounded-lg border border-slate-200 bg-white p-4",
+          mobileOpen
+            ? "fixed inset-0 z-40 w-full overflow-y-auto rounded-none"
+            : "hidden lg:block"
+        )}
+      >
       <div className="mb-3 flex items-center justify-between">
         <h2 className="text-base font-semibold text-slate-900">Filters</h2>
-        <button
-          type="button"
-          onClick={() => onChange({})}
-          className="text-xs font-medium text-brand-600 hover:underline"
-        >
-          Reset all
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => onChange({})}
+            className="text-xs font-medium text-brand-600 hover:underline"
+          >
+            Reset all
+          </button>
+          {mobileOpen && (
+            <button
+              type="button"
+              onClick={() => setMobileOpen(false)}
+              className="rounded-md bg-brand-600 px-3 py-1 text-sm font-medium text-white lg:hidden"
+            >
+              Done
+            </button>
+          )}
+        </div>
       </div>
 
       <Section title="Saved presets">
@@ -379,6 +419,17 @@ export function FilterPanel({
           className="w-full rounded border border-slate-300 px-2 py-1.5 text-sm"
         />
       </Section>
-    </aside>
+
+      {mobileOpen && (
+        <button
+          type="button"
+          onClick={() => setMobileOpen(false)}
+          className="mt-4 w-full rounded-md bg-brand-600 py-2 text-sm font-medium text-white lg:hidden"
+        >
+          Show results
+        </button>
+      )}
+      </aside>
+    </>
   );
 }

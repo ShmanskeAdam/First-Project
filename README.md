@@ -62,42 +62,35 @@ The "demo data" banner disappears automatically once real data has been imported
 the most recent sync), and "view listing" links will now resolve to the real Redfin page for each property since
 the CSV export includes one.
 
-## Switching to a live API (RentCast)
+## Going live (RentCast) — one paste, zero configuration
 
-Set in `.env` (or as Vercel env vars for your deployment):
+Open the deployed site's **Settings** page, paste your RentCast API key (from
+[app.rentcast.io](https://app.rentcast.io/app/api)) into the **Data Source** card, and click **Connect**. That
+single action:
 
-```
-LISTING_PROVIDER="rentcast"
-RENTCAST_API_KEY="your-key-here"
-```
+1. validates the key against RentCast (a rejected key is reported and removed, not stored broken),
+2. immediately pulls live listings for **all 7 North NJ counties**,
+3. deletes the seeded demo data automatically, and
+4. turns on the fully automatic daily refresh (see below).
 
-Get a free-tier key at https://www.rentcast.io/api — this does require creating an account, unlike the CSV path
-above. **Note the free tier's quota: 50 requests/month.** This app queries RentCast by *county* rather than by
-individual town (7 North NJ counties vs. 51 towns — see CLAUDE.md for why), and the automatic path only pulls
-**one county per calendar day**, rotating through all 7 over a week:
+No Vercel dashboard, no env vars, no redeploy — the key is stored (write-only) in the database and outranks all
+env-var configuration. Env vars (`LISTING_PROVIDER=rentcast` + `RENTCAST_API_KEY`) still work as an alternative
+for people who prefer them.
 
-```bash
-npm run sync          # or click the site's Refresh button, or a daily cron hitting POST /api/sync
-```
+### How it stays inside RentCast's free tier (50 requests/month) unattended
 
-This costs exactly **1 request/day ≈ 30/month**, comfortably under the 50 cap, no matter how many times you click
-Refresh on a given day (repeat clicks the same day just re-sync the same county, not a new one). Every county gets
-refreshed roughly once a week on a rolling basis — not everything updates instantly on every click, but nothing
-ever goes stale for more than about a week, and you can never run over quota by clicking too often. Duplicates
-can't happen either way: every listing upserts by RentCast's own listing ID, so re-fetching the same property
-updates it in place. The first sync also **clears the seeded demo listings automatically**.
+- Queries go **per county** (7 counties), not per town (51 towns), paged at RentCast's 500-listing max.
+- The automatic path pulls **one county per calendar day** on a weekly rotation (~30-38 requests/month) — full
+  coverage on a rolling basis, nothing more than a week stale.
+- A **daily guard** makes repeat Refresh clicks free: once today's county has synced, further clicks are no-ops
+  with an explanatory note ("Today's live data is already in").
+- A **monthly budget meter** (default 45, override with `RENTCAST_MONTHLY_BUDGET` on a paid plan) is tracked in
+  the DB and hard-stops syncing before the cap — the app cannot overrun the free tier no matter who clicks what.
+  Current usage is shown on the Settings page.
+- Duplicates can't happen: every listing upserts by RentCast's own listing ID.
 
-Want full North NJ coverage immediately (e.g., right after your first setup) instead of waiting a week for the
-rotation to reach every county? Run a one-time full sync across all 7 counties at once:
-
-```bash
-npm run sync:full
-```
-
-This costs more of the monthly quota in one shot (roughly 7-35 requests depending on how many active listings
-each county has — RentCast pages at 500 listings per request) — fine to run once, but don't put it on a daily
-schedule or you'll blow through the cap fast. After that, let the daily-rotating `npm run sync` (or Refresh
-button / cron) keep things fresh going forward.
+CLI equivalents exist for both modes: `npm run sync` (today's rotating county) and `npm run sync:full` (all 7
+counties at once, same budget enforcement).
 
 ## Manual refresh
 
@@ -118,26 +111,28 @@ to the Refresh button the first time this happens.
    free [Neon](https://neon.tech) project — and copy its connection string.
 2. Push this repo to GitHub (already done if you're reading this from the tracked branch) and import it at
    https://vercel.com/new.
-3. In the Vercel project's Environment Variables, set:
+3. In the Vercel project's Environment Variables, the only **required** one is:
    - `DATABASE_URL` — the Postgres connection string from step 1
-   - `LISTING_PROVIDER` — `mock` to launch with demo data, `static` if you've imported real data via a CSV (see
-     "Real data without an API key" above) and don't want Refresh reintroducing mock listings, or `rentcast` +
-     `RENTCAST_API_KEY` for a live, fully-automated API feed
-   - `SYNC_SECRET` — a random string, protects manual/CLI-triggered `POST /api/sync` calls
-   - `CRON_SECRET` — a random string; only needed if using `rentcast` (see step 6)
+
+   Optional hardening / alternatives:
+   - `SYNC_SECRET` — a random string; lets manual/CLI `POST /api/sync` calls bypass the 30s public throttle
+   - `CRON_SECRET` — a random string; when set, the daily cron endpoint requires Vercel's signed
+     `Authorization: Bearer` header instead of being open-but-quota-guarded. Recommended, but the cron works
+     without it (the daily/monthly quota guards make an unauthenticated endpoint harmless).
+   - `LISTING_PROVIDER` / `RENTCAST_API_KEY` — env-var alternative to pasting the key on the Settings page
+   - `RENTCAST_MONTHLY_BUDGET` — raise the request budget if you're on a paid RentCast plan
 4. Vercel auto-detects the `vercel-build` script in `package.json` (`prisma generate && prisma db push && next build`)
    and uses it instead of `next build`, so the schema is applied to your database on every deploy — no manual
    migration step needed.
 5. After the first deploy, seed it once: run `DATABASE_URL="<your prod url>" npm run db:seed` from your machine (or
    any environment that can reach the DB) to populate demo listings. **Don't** add seeding to the build step — the
-   seed script wipes and regenerates listings, which would erase any real synced data on every redeploy.
-6. **If using RentCast**, `vercel.json` already configures a daily Vercel Cron Job hitting `GET /api/cron/sync` at
-   9am UTC (`"0 9 * * *"` — the max frequency Vercel's free Hobby plan allows, which is also exactly the right
-   cadence for RentCast's 50-requests/month cap). Once `CRON_SECRET` is set and the project is deployed, this runs
-   automatically — Vercel reads that same env var to sign its cron requests, so there's nothing else to configure.
-   This makes the whole pipeline hands-off: the cron job pulls today's rotating county every day with zero manual
-   effort, and the site's Refresh button still works for on-demand pulls in between. Want full North NJ coverage
-   immediately rather than waiting for the week-long rotation? Run `DATABASE_URL="<your prod url>" RENTCAST_API_KEY="<your key>" npm run sync:full` once from your machine.
+   seed script wipes and regenerates listings, which would erase any real synced data on every redeploy. (This step
+   is optional if you're going straight to live data — connecting RentCast on the Settings page fills the site
+   with real listings immediately.)
+6. `vercel.json` already configures a daily Vercel Cron Job hitting `GET /api/cron/sync` at 9am UTC
+   (`"0 9 * * *"` — the max frequency Vercel's free Hobby plan allows, and exactly the right cadence for
+   RentCast's quota). It runs automatically on deploy with **no configuration at all**; the site's Refresh button
+   still works for on-demand pulls in between, and both share the same quota guards.
 
 ## Scripts
 

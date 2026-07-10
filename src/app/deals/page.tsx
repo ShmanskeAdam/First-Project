@@ -8,16 +8,47 @@ import {
   fetchPresets,
   createPreset,
   deletePreset as deletePresetApi,
+  fetchRecentCuts,
+  type RecentCut,
 } from "@/lib/apiClient";
-import { formatCurrency, PROPERTY_TYPE_LABELS } from "@/lib/format";
+import { formatCurrency, formatRelativeTime, PROPERTY_TYPE_LABELS } from "@/lib/format";
 import { getExternalListingUrl } from "@/lib/listingUrl";
 import { DealBadge } from "@/components/DealBadge";
 import { FilterPanel } from "@/components/FilterPanel";
+import { ListingHistoryModal } from "@/components/ListingHistoryModal";
 import { useRefresh } from "@/context/RefreshContext";
 import type { Listing, ListingFilters, FilterPreset } from "@/types/listing";
 import type { TownInfo } from "@/lib/towns";
 
 const LIMIT = 50;
+
+function RecentCutsPanel({ cuts }: { cuts: RecentCut[] }) {
+  if (cuts.length === 0) return null;
+  return (
+    <div className="mb-5 rounded-lg border border-slate-200 bg-white p-4">
+      <h2 className="mb-2 text-sm font-semibold text-slate-800">🔻 Just dropped — most recent price cuts</h2>
+      <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 sm:grid-cols-2">
+        {cuts.map((c, i) => (
+          <div key={i} className="flex items-center justify-between gap-3 text-sm">
+            <a
+              href={getExternalListingUrl(c.listing)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="min-w-0 truncate text-slate-800 hover:text-brand-700 hover:underline"
+              title={`${c.listing.address}, ${c.listing.town}`}
+            >
+              {c.listing.address} <span className="text-slate-400">· {c.listing.town}</span>
+            </a>
+            <span className="shrink-0 font-medium text-rose-600">
+              −{formatCurrency(c.oldPrice - c.newPrice)} ({Math.round(c.cutPct * 100)}%)
+              <span className="ml-1.5 font-normal text-slate-400">{formatRelativeTime(c.changedAt)}</span>
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 export default function DealsPage() {
   const [towns, setTowns] = useState<TownInfo[]>([]);
@@ -25,8 +56,10 @@ export default function DealsPage() {
   const [presets, setPresets] = useState<FilterPreset[]>([]);
   const [rankBy, setRankBy] = useState<"town" | "nj">("town");
   const [listings, setListings] = useState<Listing[]>([]);
+  const [recentCuts, setRecentCuts] = useState<RecentCut[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [historyListing, setHistoryListing] = useState<Listing | null>(null);
   const { refreshKey } = useRefresh();
 
   useEffect(() => {
@@ -35,6 +68,9 @@ export default function DealsPage() {
       .catch(() => undefined);
     fetchPresets()
       .then((r) => setPresets(r.presets))
+      .catch(() => undefined);
+    fetchRecentCuts(8)
+      .then((r) => setRecentCuts(r.cuts))
       .catch(() => undefined);
   }, [refreshKey]);
 
@@ -69,7 +105,7 @@ export default function DealsPage() {
   }
 
   return (
-    <div className="flex gap-6">
+    <div className="flex flex-col gap-6 lg:flex-row">
       <FilterPanel
         towns={towns}
         filters={filters}
@@ -91,6 +127,8 @@ export default function DealsPage() {
             </Link>
           </p>
         </div>
+
+        <RecentCutsPanel cuts={recentCuts} />
 
         <div className="mb-4 flex items-center gap-2">
           <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Rank by</span>
@@ -159,6 +197,14 @@ export default function DealsPage() {
                           {r.detail}
                         </span>
                       ))}
+                      <button
+                        type="button"
+                        onClick={() => setHistoryListing(l)}
+                        className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+                        title="Price & market history"
+                      >
+                        📈 History
+                      </button>
                     </div>
                   </div>
                 </li>
@@ -167,6 +213,8 @@ export default function DealsPage() {
           </ol>
         )}
       </div>
+
+      {historyListing && <ListingHistoryModal listing={historyListing} onClose={() => setHistoryListing(null)} />}
     </div>
   );
 }

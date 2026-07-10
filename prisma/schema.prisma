@@ -132,6 +132,22 @@ model SyncStatus {
   ingested     Int
 }
 
+// Single-row table (id always "default") for runtime app configuration that
+// must survive without a redeploy. `rentcastApiKey` is set from the Settings
+// page (write-only: the API never echoes it back) and takes precedence over
+// the RENTCAST_API_KEY env var, so connecting live data is a one-time paste
+// on the site itself — no Vercel dashboard or redeploy required.
+// `requestsThisMonth`/`requestMonth` meter RentCast API usage so the app can
+// hard-stop itself under the free tier's 50 requests/month, no matter how
+// often any visitor clicks Refresh.
+model AppConfig {
+  id                String   @id @default("default")
+  rentcastApiKey    String?
+  requestsThisMonth Int      @default(0)
+  requestMonth      String? // "YYYY-MM" the counter applies to; reset on rollover
+  updatedAt         DateTime @updatedAt
+}
+
 // User-saved filter presets so common searches can be reapplied with one click.
 model FilterPreset {
   id        String   @id @default(cuid())

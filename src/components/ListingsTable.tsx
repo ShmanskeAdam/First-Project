@@ -11,6 +11,7 @@ interface ListingsTableProps {
   sortField?: SortField;
   sortDir: "asc" | "desc";
   onSort: (field: SortField) => void;
+  onShowHistory?: (listing: Listing) => void;
 }
 
 interface Column {
@@ -44,7 +45,7 @@ function SortHeader({ label, active, dir, onClick }: { label: string; active: bo
   );
 }
 
-export function ListingsTable({ listings, sortField, sortDir, onSort }: ListingsTableProps) {
+export function ListingsTable({ listings, sortField, sortDir, onSort, onShowHistory }: ListingsTableProps) {
   const columns: Column[] = [
     {
       label: "Address",
@@ -59,6 +60,11 @@ export function ListingsTable({ listings, sortField, sortDir, onSort }: Listings
           >
             {l.address} ↗
           </a>
+          {l.status === "ACTIVE" && l.daysOnMarket <= 7 && (
+            <span className="ml-1.5 rounded bg-emerald-600 px-1 py-0.5 align-middle text-[10px] font-bold text-white">
+              NEW
+            </span>
+          )}
           <p className="text-xs text-slate-500">
             {l.town}, {l.county} · {l.zip}
           </p>
@@ -104,6 +110,23 @@ export function ListingsTable({ listings, sortField, sortDir, onSort }: Listings
       label: "Deal score (NJ)",
       render: (l) => <DealBadge dealScore={l.dealScoreNj} />,
     },
+    ...(onShowHistory
+      ? [
+          {
+            label: "History",
+            render: (l: Listing) => (
+              <button
+                type="button"
+                onClick={() => onShowHistory(l)}
+                className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+                title="Price & market history"
+              >
+                📈 View
+              </button>
+            ),
+          } satisfies Column,
+        ]
+      : []),
   ];
 
   return (

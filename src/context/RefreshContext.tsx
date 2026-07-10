@@ -43,9 +43,7 @@ export function RefreshProvider({ children }: { children: React.ReactNode }) {
       setLastSyncedAt(status.lastSyncedAt);
       setProvider(status.provider);
       setRefreshKey((k) => k + 1);
-      if (status.clearedMockListings > 0) {
-        setNotice(`Cleared ${status.clearedMockListings.toLocaleString()} demo listings — now showing real data.`);
-      }
+      if (status.note) setNotice(status.note);
     } catch (err) {
       setError(err instanceof SyncThrottledError ? err.message : "Refresh failed. Please try again.");
     } finally {

@@ -3,10 +3,11 @@ import { RentCastListingProvider } from "./rentcastProvider";
 import type { ListingProvider, ListingProviderQuery } from "./types";
 import { TOWN_NAMES, COUNTIES } from "@/lib/towns";
 import { getTodaysCounty } from "@/lib/syncRotation";
+import { getStoredRentcastKey } from "@/lib/appConfig";
 
 export * from "./types";
 export { MockListingProvider } from "./mockProvider";
-export { RentCastListingProvider } from "./rentcastProvider";
+export { RentCastListingProvider, RentCastAuthError } from "./rentcastProvider";
 export { CsvListingProvider } from "./csvProvider";
 
 /**
@@ -24,13 +25,24 @@ class StaticListingProvider implements ListingProvider {
 }
 
 /**
- * Picks the active provider from `LISTING_PROVIDER` (defaults to "mock" so the
- * app works out of the box with zero configuration). Set LISTING_PROVIDER=rentcast
- * and RENTCAST_API_KEY in .env to switch to live data, or LISTING_PROVIDER=static
- * after a one-off CSV import (see scripts/import-csv.ts) to stop the Refresh
- * button from doing anything at all rather than reintroducing mock data.
+ * Picks the active provider. Resolution order:
+ *
+ * 1. A RentCast API key stored in the database (pasted into the site's own
+ *    Settings page — see `src/lib/appConfig.ts`) → RentCast. This outranks
+ *    every env var so going live requires zero Vercel-dashboard changes and
+ *    zero redeploys: paste the key on /settings once and the very next sync
+ *    is real data.
+ * 2. `LISTING_PROVIDER=rentcast` + `RENTCAST_API_KEY` env vars → RentCast.
+ * 3. `LISTING_PROVIDER=static` → no-op provider (used after a one-off CSV
+ *    import so Refresh can't reintroduce mock data).
+ * 4. Default → mock (the app works out of the box with zero configuration).
  */
-export function getActiveProvider(): ListingProvider {
+export async function getActiveProvider(): Promise<ListingProvider> {
+  const storedKey = await getStoredRentcastKey();
+  if (storedKey) {
+    return new RentCastListingProvider(storedKey);
+  }
+
   const providerKey = process.env.LISTING_PROVIDER ?? "mock";
 
   switch (providerKey) {
@@ -38,7 +50,7 @@ export function getActiveProvider(): ListingProvider {
       const apiKey = process.env.RENTCAST_API_KEY;
       if (!apiKey) {
         throw new Error(
-          "LISTING_PROVIDER=rentcast requires RENTCAST_API_KEY to be set in your environment."
+          "LISTING_PROVIDER=rentcast requires RENTCAST_API_KEY to be set (or a key saved on the Settings page)."
         );
       }
       return new RentCastListingProvider(apiKey);
@@ -71,7 +83,10 @@ export function getDefaultSyncQuery(provider: ListingProvider): ListingProviderQ
  */
 export function getFullSyncQuery(provider: ListingProvider): ListingProviderQuery {
   if (provider.key === "rentcast") {
-    return { counties: COUNTIES.slice(), maxPagesPerArea: 5 };
+    // 2 pages/county (1,000 listings) covers realistic active inventory while
+    // keeping the worst case at 14 requests — small enough that the connect-time
+    // full sync plus a month of daily rotation still fits the free tier.
+    return { counties: COUNTIES.slice(), maxPagesPerArea: 2 };
   }
   return { towns: TOWN_NAMES };
 }

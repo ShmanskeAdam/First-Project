@@ -1,8 +1,9 @@
-import type { ListingFilters, ListingQuery, PaginatedListings, FilterPreset, ScoringConfig } from "@/types/listing";
+import type { Listing, ListingFilters, ListingQuery, PaginatedListings, FilterPreset, ScoringConfig } from "@/types/listing";
 import type { TownInfo } from "@/lib/towns";
 import type { TrendPoint } from "@/app/api/analytics/trends/route";
 import type { TownComparisonRow } from "@/app/api/analytics/comparison/route";
-import type { SyncStatusPayload, SyncTriggerResult } from "@/lib/syncStatus";
+import type { SyncStatusPayload } from "@/lib/syncStatus";
+import type { SyncRunResult } from "@/lib/runSync";
 
 function toQueryString(filters: ListingFilters & Record<string, unknown>): string {
   const params = new URLSearchParams();
@@ -67,7 +68,17 @@ export async function fetchComparison(
   return res.json();
 }
 
-export async function fetchSettings(): Promise<{ config: ScoringConfig; defaults: ScoringConfig }> {
+export interface DataSourceStatus {
+  rentcastConfigured: boolean;
+  rentcastKeyHint: string | null;
+  rentcastUsage: { used: number; budget: number; month: string };
+}
+
+export async function fetchSettings(): Promise<{
+  config: ScoringConfig;
+  defaults: ScoringConfig;
+  dataSource: DataSourceStatus;
+}> {
   const res = await fetch("/api/settings");
   if (!res.ok) throw new Error("Failed to fetch settings");
   return res.json();
@@ -81,6 +92,23 @@ export async function updateSettings(patch: Partial<ScoringConfig>): Promise<{ c
   });
   if (!res.ok) throw new Error("Failed to update settings");
   return res.json();
+}
+
+/** Save (or clear, with "") the RentCast key. Saving triggers an immediate full sync server-side. */
+export async function connectRentcast(apiKey: string): Promise<{
+  dataSource: DataSourceStatus;
+  sync: SyncRunResult | null;
+  warning?: string;
+  error?: string;
+  ok: boolean;
+}> {
+  const res = await fetch("/api/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rentcastApiKey: apiKey }),
+  });
+  const body = await res.json();
+  return { ...body, ok: res.ok };
 }
 
 export async function fetchPresets(): Promise<{ presets: FilterPreset[] }> {
@@ -103,6 +131,54 @@ export async function deletePreset(id: string): Promise<void> {
   await fetch(`/api/filter-presets/${id}`, { method: "DELETE" });
 }
 
+export interface MarketSummary {
+  activeCount: number;
+  medianPrice: number;
+  medianPricePerSqft: number;
+  medianDom: number;
+  priceCutShare: number;
+  momMedianPricePct: number | null;
+  momInventoryPct: number | null;
+  momDomDelta: number | null;
+}
+
+export async function fetchSummary(filters: ListingFilters): Promise<MarketSummary> {
+  const qs = toQueryString(filters as ListingFilters & Record<string, unknown>);
+  const res = await fetch(`/api/analytics/summary?${qs}`);
+  if (!res.ok) throw new Error("Failed to fetch market summary");
+  return res.json();
+}
+
+export interface RecentCut {
+  listing: Listing;
+  oldPrice: number;
+  newPrice: number;
+  changedAt: string;
+  cutPct: number;
+}
+
+export async function fetchRecentCuts(limit = 8): Promise<{ cuts: RecentCut[] }> {
+  const res = await fetch(`/api/deals/recent-cuts?limit=${limit}`);
+  if (!res.ok) throw new Error("Failed to fetch recent cuts");
+  return res.json();
+}
+
+export interface ListingHistory {
+  snapshots: { capturedAt: string; listPrice: number; daysOnMarket: number; status: string }[];
+  priceChanges: { oldPrice: number; newPrice: number; changedAt: string }[];
+}
+
+export async function fetchListingHistory(id: string): Promise<ListingHistory> {
+  const res = await fetch(`/api/listings/${id}/history`);
+  if (!res.ok) throw new Error("Failed to fetch listing history");
+  return res.json();
+}
+
+export function listingsExportUrl(filters: ListingFilters): string {
+  const qs = toQueryString(filters as ListingFilters & Record<string, unknown>);
+  return `/api/listings/export?${qs}`;
+}
+
 export async function fetchSyncStatus(): Promise<SyncStatusPayload> {
   const res = await fetch("/api/sync");
   if (!res.ok) throw new Error("Failed to fetch sync status");
@@ -115,7 +191,7 @@ export class SyncThrottledError extends Error {
   }
 }
 
-export async function triggerSync(): Promise<SyncTriggerResult> {
+export async function triggerSync(): Promise<SyncRunResult> {
   const res = await fetch("/api/sync", { method: "POST" });
   const body = await res.json();
   if (res.status === 429) throw new SyncThrottledError(body.retryAfterSeconds ?? 30);

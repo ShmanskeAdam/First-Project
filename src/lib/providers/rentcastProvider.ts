@@ -4,7 +4,14 @@ import type { ListingProvider, ListingProviderQuery, RawListing } from "./types"
 
 const RENTCAST_BASE_URL = "https://api.rentcast.io/v1";
 const PAGE_SIZE = 500; // RentCast's max `limit` per request — fewer pages = fewer billed calls.
-const DEFAULT_MAX_PAGES_PER_AREA = 1; // 1 request per county by default; see fetchListings doc for why.
+// Up to 2 pages per county by default: page 2 is only fetched when page 1 comes back
+// completely full (exactly 500 rows), so most counties cost 1 request and only the
+// largest (Bergen/Essex-sized inventory) cost 2. The monthly budget meter in
+// src/lib/appConfig.ts is the hard backstop either way.
+const DEFAULT_MAX_PAGES_PER_AREA = 2;
+
+/** Thrown on 401/403 so callers can distinguish "bad key" from transient failures. */
+export class RentCastAuthError extends Error {}
 
 /**
  * RentCast API (https://www.rentcast.io/api) adapter. Requires RENTCAST_API_KEY
@@ -24,6 +31,9 @@ const DEFAULT_MAX_PAGES_PER_AREA = 1; // 1 request per county by default; see fe
 export class RentCastListingProvider implements ListingProvider {
   readonly key = "rentcast";
 
+  /** How many billed API requests the most recent fetchListings() call made — read by the quota meter. */
+  lastFetchRequestCount = 0;
+
   constructor(private apiKey: string) {
     if (!apiKey) {
       throw new Error("RentCastListingProvider requires an API key (set RENTCAST_API_KEY)");
@@ -40,6 +50,7 @@ export class RentCastListingProvider implements ListingProvider {
 
     const maxPages = query?.maxPagesPerArea ?? DEFAULT_MAX_PAGES_PER_AREA;
     const results: RawListing[] = [];
+    this.lastFetchRequestCount = 0;
 
     for (const county of counties) {
       let offset = 0;
@@ -52,6 +63,7 @@ export class RentCastListingProvider implements ListingProvider {
           offset: String(offset),
         });
 
+        this.lastFetchRequestCount++;
         const res = await fetch(`${RENTCAST_BASE_URL}/listings/sale?${params.toString()}`, {
           headers: {
             "X-Api-Key": this.apiKey,
@@ -59,6 +71,9 @@ export class RentCastListingProvider implements ListingProvider {
           },
         });
 
+        if (res.status === 401 || res.status === 403) {
+          throw new RentCastAuthError(`RentCast rejected the API key (HTTP ${res.status}).`);
+        }
         if (!res.ok) {
           throw new Error(`RentCast request failed for ${county} County: ${res.status} ${res.statusText}`);
         }

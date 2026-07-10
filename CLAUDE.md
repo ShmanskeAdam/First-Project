@@ -40,20 +40,25 @@ Implementations, all in `src/lib/providers/`:
   what `prisma/seed.ts` uses to backfill ~2 years of `ListingSnapshot`/`PriceChange` rows so the trend charts have
   something to show on a fresh clone with zero API calls.
 - **`RentCastListingProvider`** (`rentcastProvider.ts`) — live data via https://www.rentcast.io/api.
-  Set `LISTING_PROVIDER=rentcast` and `RENTCAST_API_KEY` in `.env`. Calls `GET /listings/sale` **per county**
-  (`county` + `state` params), not per town — RentCast's free tier caps out at 50 requests/month, and this app
-  tracks 51 towns across only 7 counties, so a per-town query would blow the entire monthly quota in a single
-  sync. `fetchListings` requires an explicit `counties` list (`ListingProviderQuery.counties`) and paginates via
-  `limit`/`offset` (500/page, RentCast's max) up to `maxPagesPerArea` pages per county (default 1).
+  The normal activation path is pasting the API key into the **Settings page's Data Source card**, which stores it
+  in the `AppConfig` DB row (`src/lib/appConfig.ts`); `getActiveProvider()` checks that key *first*, before any
+  env var, so going live needs no redeploy. (`LISTING_PROVIDER=rentcast` + `RENTCAST_API_KEY` env vars still work
+  as a fallback.) The key is write-only: `GET /api/settings` reports only `rentcastConfigured` + a last-4 hint,
+  never the key. Connecting validates the key by immediately running a full sync — a 401/403 raises
+  `RentCastAuthError`, which the settings route catches to un-store the bad key and report it.
+  Calls `GET /listings/sale` **per county** (`county` + `state` params), not per town — RentCast's free tier caps
+  out at 50 requests/month, and this app tracks 51 towns across only 7 counties, so a per-town query would blow
+  the entire monthly quota in a single sync. `fetchListings` requires an explicit `counties` list
+  (`ListingProviderQuery.counties`) and paginates via `limit`/`offset` (500/page, RentCast's max) up to
+  `maxPagesPerArea` pages per county (default 2 — page 2 is only fetched when page 1 comes back exactly full).
+  The provider exposes `lastFetchRequestCount`, which `runSync` meters into the monthly budget (below).
   - `getDefaultSyncQuery()` (`providers/index.ts`) is what the automatic path (Refresh button, `npm run sync`,
     cron) actually uses: **one county per calendar day**, picked deterministically by `src/lib/syncRotation.ts`
-    (`getTodaysCounty()`, a `dayOfYear % 7` index into `COUNTIES`). That's exactly 1 request/day ≈ 30/month,
-    safely under quota regardless of how many times Refresh gets clicked on a given day — repeat clicks the same
-    day just re-sync the same county. Full North NJ coverage still happens, just on a rolling ~weekly basis per
-    county rather than instantly.
-  - `getFullSyncQuery()` is the opt-in alternative used by `npm run sync:full` (`scripts/sync-full.ts`): all 7
-    counties at once with `maxPagesPerArea: 5`, for a one-time comprehensive pull (e.g., right after initial
-    setup). Costs far more quota per run, so it's deliberately not part of the automatic/daily path.
+    (`getTodaysCounty()`, a `dayOfYear % 7` index into `COUNTIES`). That's 1-2 requests/day ≈ 30-38/month.
+    Full North NJ coverage still happens, just on a rolling ~weekly basis per county rather than instantly.
+  - `getFullSyncQuery()` is the opt-in alternative used by the connect flow and `npm run sync:full`: all 7
+    counties at once with `maxPagesPerArea: 2` (≤14 requests). Costs more quota per run, so it's deliberately not
+    part of the automatic/daily path.
 - **`CsvListingProvider`** (`csvProvider.ts`) — parses a Redfin "Download All" CSV export (a feature Redfin
   explicitly permits, and the only real-data path that needs no API key or account) into `RawListing[]`. Not wired
   into `getActiveProvider()` since it takes a CSV string rather than reading env config; `scripts/import-csv.ts` is
@@ -68,34 +73,48 @@ Implementations, all in `src/lib/providers/`:
   mock-sourced rows (cascades to their snapshots/price changes) on demand, though this now also happens
   automatically (see `clearMockListingsIfLiveSource` below).
 
-`src/lib/providers/index.ts` → `getActiveProvider()` picks the provider from `LISTING_PROVIDER` (defaults to
-`"mock"`). **Do not build a Zillow scraper** — Zillow's ToS prohibits it. RentCast/RapidAPI resellers, ATTOM, and
-Redfin's CSV export are the sanctioned paths; see the README for how to add another RapidAPI-based provider (same
-pattern as `rentcastProvider.ts`).
+`src/lib/providers/index.ts` → `getActiveProvider()` (async — it reads the DB-stored key first, then falls back to
+`LISTING_PROVIDER`, defaulting to `"mock"`). **Do not build a Zillow scraper** — Zillow's ToS prohibits it.
+RentCast/RapidAPI resellers, ATTOM, and Redfin's CSV export are the sanctioned paths; see the README for how to
+add another RapidAPI-based provider (same pattern as `rentcastProvider.ts`).
 
 ### Ingestion pipeline
 
-`src/lib/ingest.ts` → `ingestRawListing(raw, source)` is the single place that turns a `RawListing` into DB rows:
-upserts the `Listing` (keyed on `[source, externalId]`), recomputes `pricePerSqft`/`daysOnMarket`, writes a
-`PriceChange` row if the price moved since last sync, and always appends one `ListingSnapshot` row. `scripts/sync-listings.ts`
-is the cron entrypoint (`npm run sync`); `POST /api/sync` exposes the same thing over HTTP. Deduplication is
-inherent to the upsert key — re-syncing the same property (matched by the provider's own ID) updates the existing
-row rather than creating a new one, for every provider.
+`src/lib/ingest.ts` → `ingestRawListings(raws, source)` is the single place that turns provider output into DB
+rows, and it is **batched**: ~8 queries total (dedupe in-batch → one findMany of existing rows → createMany new →
+per-row updates only for materially-changed rows → createMany PriceChanges → createMany Snapshots → one bulk
+lastSeenAt bump → one raw-SQL DOM refresh) instead of ~4 queries *per listing*. The naive per-row loop it replaced
+was ~3,000 sequential round trips for a 700-listing sync — fine locally, but guaranteed to blow past serverless
+time limits against network-attached Postgres (Neon) on Vercel; the batched version ingests 1,000 listings in
+under a second. The final raw-SQL statement recomputes `daysOnMarket` for every ACTIVE/PENDING row from
+`listedDate`, so DOM stays fresh across the whole table even though only one county syncs per day. Deduplication
+is inherent to the `(source, externalId)` unique key — re-syncing the same property updates it in place, never
+duplicates it — plus an in-batch dedupe for providers whose pagination can return the same row twice.
 
-`ingest.ts` also exports `clearMockListingsIfLiveSource(activeSource)`, called by both `scripts/sync-listings.ts`
-and `POST /api/sync` right after ingesting: if the active provider isn't `"mock"`, it deletes every `source: "mock"`
-listing (a no-op once none remain). This makes switching from demo data to a real source (RentCast, or a CSV
-import) fully hands-off — the very next sync/refresh/import cleans up the fake listings with no separate manual
-step. `POST /api/sync`'s response includes `clearedMockListings`, which `RefreshContext` surfaces as a one-time
-"Cleared N demo listings" notice next to the Refresh button.
+`ingest.ts` also exports `clearMockListingsIfLiveSource(activeSource)`: if the active provider isn't `"mock"`, it
+deletes every `source: "mock"` listing (a no-op once none remain), so switching from demo data to a real source is
+fully hands-off.
 
-Every sync (cron, `npm run sync`, or a manual click) also calls `recordSyncStatus()` (`src/lib/syncStatus.ts`),
-which upserts the single-row `SyncStatus` table — this is what powers the "Last refreshed: Xm ago" indicator in the
-nav bar. `GET /api/sync` reads it (no auth, no side effects); `POST /api/sync` triggers a real sync. Unlike the
-CLI/cron path, the public UI's Refresh button can't carry `SYNC_SECRET` (it would have to ship in client-side JS),
-so `POST /api/sync` treats a request with a **valid** `x-sync-secret` header as trusted and skips the throttle, and
-rate-limits everything else to one sync per 30 seconds (`MIN_MANUAL_INTERVAL_MS` in `src/app/api/sync/route.ts`) —
-that throttle, not a secret, is what actually protects a live provider from being hammered by site visitors.
+### Sync orchestration (`src/lib/runSync.ts`)
+
+`runSync(mode)` is the ONE sync implementation, called by all five triggers: the UI Refresh button
+(`POST /api/sync`), the Vercel cron (`GET /api/cron/sync`), the Settings connect flow (mode "full"), and the two
+CLI scripts. It layers RentCast-only quota guards on top of fetch→ingest→clear-mock→record-status:
+
+- **Daily guard** (mode "daily"): if a RentCast sync already succeeded today (UTC), the run is a no-op returning
+  `skipped: true` and a human note — so unlimited Refresh clicks cost at most one county's requests per day.
+- **Monthly budget**: `AppConfig.requestsThisMonth` meters actual request counts (via the provider's
+  `lastFetchRequestCount`); runs that could exceed the budget (default 45, env `RENTCAST_MONTHLY_BUDGET`) are
+  refused with `skipped: true`. The app therefore *cannot* overrun RentCast's free tier unattended.
+- Every result carries a `note` string that `RefreshContext` surfaces next to the Refresh button ("Pulled Essex
+  County (512 listings)", "Today's live data is already in…", "Cleared 732 demo listings…").
+
+Auth differs per trigger: `POST /api/sync` rate-limits anonymous callers to one sync per 30s
+(`MIN_MANUAL_INTERVAL_MS`) and lets a valid `x-sync-secret` header bypass the throttle; `GET /api/cron/sync`
+requires Vercel's `Authorization: Bearer <CRON_SECRET>` header **only if** `CRON_SECRET` is set — unset, it stays
+open so the daily cron works with zero configuration (safe because the quota guards make hammering it pointless).
+Both sync routes set `export const maxDuration = 60`.
+
 `RefreshContext` (`src/context/RefreshContext.tsx`) exposes a `refreshKey` that every page's data-fetch effect
 depends on, so clicking Refresh re-fetches in place without a full page reload.
 
@@ -121,7 +140,14 @@ happened incrementally.
   the Settings page via `GET`/`PUT /api/settings`.
 - **`FilterPreset`** — saved filter sets (`name`, `filters` as a JSON-encoded `ListingFilters` blob).
 - **`SyncStatus`** — single row (`id: "default"`) tracking the most recent sync (`lastSyncedAt`, `provider`,
-  `fetched`, `ingested`), written by every sync path and read by the nav bar's "Last refreshed" indicator.
+  `fetched`, `ingested`), written by every sync path and read by the nav bar's "Last refreshed" indicator. Also
+  what the daily guard checks ("did a rentcast sync already happen today?").
+- **`AppConfig`** — single row (`id: "default"`): `rentcastApiKey` (write-only via the Settings page; never
+  echoed by any API) plus `requestsThisMonth`/`requestMonth`, the RentCast monthly budget meter. Being DB-stored
+  is the whole point: connecting live data and enforcing quota both survive redeploys and require no env-var
+  changes. Note the trade-off accepted here: `PUT /api/settings` is unauthenticated (like the scoring weights
+  always were), so a stranger could *overwrite* the key — but never read it, and the budget meter bounds any
+  abuse; re-pasting recovers.
 
 ## Deal-scoring engine (`src/lib/scoring/`)
 
@@ -176,10 +202,27 @@ special case (handled in `/api/listings/route.ts`) since neither is a DB column 
 scored, sorted, and paginated in memory rather than in SQL. `/deals` uses the same `FilterPanel` component as the
 main listings page (not a stripped-down subset) so any filter available on one is available on the other.
 
+The filter panel is mobile-responsive: below `lg` it collapses behind a "☰ Filters" button (with an active-filter
+count) that opens the panel as a full-screen drawer — that disclosure state lives inside `FilterPanel` itself, so
+pages don't duplicate it.
+
 ## Adding a town
 
 Add one entry to `TOWNS` in `src/lib/towns.ts` (name, county, nearest transit station) — the filter panel, mock
 data generator, and town-comparison chart all read from that single list.
+
+## Secondary analysis endpoints & UI
+
+- `GET /api/analytics/summary` — headline stat cards (median price / $/sqft / DOM, active count, price-cut share)
+  with month-over-month deltas computed from snapshots; rendered by `MarketSummaryCards` atop the Analytics page.
+- `GET /api/deals/recent-cuts` — latest price cut per active listing, newest first; the "Just dropped" panel on
+  Top Deals.
+- `GET /api/listings/[id]/history` — one listing's snapshots + price-change events; powers
+  `ListingHistoryModal` (step-line price chart, cut list, town-score breakdown), opened from the "📈" buttons on
+  the table, grid, and leaderboard.
+- `GET /api/listings/export` — CSV download of the currently filtered result set (2,000-row cap), linked from the
+  "⬇ CSV" button on the listings page.
+- Cosmetic: ACTIVE listings ≤7 days old get a green "NEW" chip; the listings page has a 25/50/100 page-size picker.
 
 ## External listing links
 

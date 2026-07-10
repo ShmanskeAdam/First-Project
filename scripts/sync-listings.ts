@@ -1,36 +1,21 @@
 /**
- * Pulls fresh listings from the currently configured provider (see
- * LISTING_PROVIDER in .env) and appends them to the price-history tables.
- * Run manually with `npm run sync`, or schedule it (OS cron, a systemd timer,
- * Vercel Cron hitting /api/sync, etc.) to keep the historical snapshots —
- * and therefore the trend charts — up to date.
- *
- * For RentCast, this uses the same day-rotating single-county query as the
- * site's own Refresh button (see src/lib/syncRotation.ts) to stay within the
- * free tier's 50 requests/month. For an immediate one-time pull across every
- * North NJ county at once (more requests, but instant full coverage), use
+ * Daily sync entrypoint (`npm run sync`) — same code path as the site's
+ * Refresh button and the Vercel Cron job (src/lib/runSync.ts), so it carries
+ * the same RentCast quota guards: one rotating county per day, hard monthly
+ * request budget. For an immediate full pull across every county, use
  * `npm run sync:full` instead.
  */
-import { getActiveProvider, getDefaultSyncQuery } from "../src/lib/providers";
-import { ingestRawListings, clearMockListingsIfLiveSource } from "../src/lib/ingest";
+import { runSync } from "../src/lib/runSync";
 import { prisma } from "../src/lib/db";
-import { recordSyncStatus } from "../src/lib/syncStatus";
 
 async function main() {
-  const provider = getActiveProvider();
-  const query = getDefaultSyncQuery(provider);
-  console.log(`Syncing listings via provider "${provider.key}"...`, query.counties ? `(county: ${query.counties.join(", ")})` : "");
-
-  const raws = await provider.fetchListings(query);
-  console.log(`Fetched ${raws.length} listings.`);
-
-  const results = await ingestRawListings(raws, provider.key);
-  console.log(`Ingested ${results.length} listings (upserted + snapshotted).`);
-
-  const cleared = await clearMockListingsIfLiveSource(provider.key);
-  if (cleared > 0) console.log(`Cleared ${cleared} leftover mock listings now that a live source is active.`);
-
-  await recordSyncStatus(provider.key, raws.length, results.length);
+  const result = await runSync("daily");
+  if (result.skipped) {
+    console.log(`Skipped: ${result.note}`);
+  } else {
+    console.log(`Synced via "${result.provider}": fetched ${result.fetched}, ingested ${result.ingested}.`);
+    if (result.note) console.log(result.note);
+  }
 }
 
 main()

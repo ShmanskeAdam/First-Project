@@ -1,35 +1,25 @@
 /**
- * One-time (or occasional, deliberate) full sync across every North NJ
- * county at once — unlike the day-rotating default (`npm run sync` /
- * clicking Refresh, which only pulls one county per day to stay within
- * RentCast's free 50-requests/month cap), this pulls all 7 counties in a
- * single run. Costs roughly 7-35 requests (1-5 pages per county depending on
- * how many active listings each county has) — fine to run once when you
- * first set up a live provider so the site has full coverage immediately,
- * but running it often will burn through the monthly quota fast.
+ * Deliberate full sync across every North NJ county at once (`npm run
+ * sync:full`) — unlike the day-rotating default, this pulls all 7 counties in
+ * a single run (up to ~14 RentCast requests). Same implementation as every
+ * other sync path (src/lib/runSync.ts), so the monthly request budget still
+ * applies: a run that would exceed it is refused rather than overrunning the
+ * free tier.
  *
- * Usage: DATABASE_URL="..." RENTCAST_API_KEY="..." npm run sync:full
+ * Usage: DATABASE_URL="..." npm run sync:full
+ * (Uses the RentCast key saved on the Settings page, or RENTCAST_API_KEY env.)
  */
-import { getActiveProvider, getFullSyncQuery } from "../src/lib/providers";
-import { ingestRawListings, clearMockListingsIfLiveSource } from "../src/lib/ingest";
+import { runSync } from "../src/lib/runSync";
 import { prisma } from "../src/lib/db";
-import { recordSyncStatus } from "../src/lib/syncStatus";
 
 async function main() {
-  const provider = getActiveProvider();
-  const query = getFullSyncQuery(provider);
-  console.log(`Full sync via provider "${provider.key}"...`, query.counties ? `(counties: ${query.counties.join(", ")})` : "");
-
-  const raws = await provider.fetchListings(query);
-  console.log(`Fetched ${raws.length} listings.`);
-
-  const results = await ingestRawListings(raws, provider.key);
-  console.log(`Ingested ${results.length} listings (upserted + snapshotted).`);
-
-  const cleared = await clearMockListingsIfLiveSource(provider.key);
-  if (cleared > 0) console.log(`Cleared ${cleared} leftover mock listings now that a live source is active.`);
-
-  await recordSyncStatus(provider.key, raws.length, results.length);
+  const result = await runSync("full");
+  if (result.skipped) {
+    console.log(`Skipped: ${result.note}`);
+  } else {
+    console.log(`Full sync via "${result.provider}": fetched ${result.fetched}, ingested ${result.ingested}.`);
+    if (result.note) console.log(result.note);
+  }
 }
 
 main()

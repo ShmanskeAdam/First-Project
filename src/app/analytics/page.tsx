@@ -5,7 +5,8 @@ import { TownMultiSelect } from "@/components/TownMultiSelect";
 import { TrendLineChart } from "@/components/charts/TrendLineChart";
 import { PriceHistogramChart } from "@/components/charts/PriceHistogramChart";
 import { TownComparisonChart } from "@/components/charts/TownComparisonChart";
-import { fetchTowns, fetchTrends, fetchHistogram, fetchComparison } from "@/lib/apiClient";
+import { fetchTowns, fetchTrends, fetchHistogram, fetchComparison, fetchSummary, type MarketSummary } from "@/lib/apiClient";
+import { MarketSummaryCards } from "@/components/MarketSummaryCards";
 import { formatCompactCurrency } from "@/lib/format";
 import { useRefresh } from "@/context/RefreshContext";
 import type { TrendPoint } from "@/app/api/analytics/trends/route";
@@ -31,6 +32,7 @@ export default function AnalyticsPage() {
   const [trends, setTrends] = useState<TrendPoint[]>([]);
   const [histogram, setHistogram] = useState<{ rangeStart: number; rangeEnd: number; count: number }[]>([]);
   const [comparison, setComparison] = useState<TownComparisonRow[]>([]);
+  const [summary, setSummary] = useState<MarketSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const { refreshKey } = useRefresh();
@@ -50,11 +52,13 @@ export default function AnalyticsPage() {
       fetchTrends(selectedTowns.length ? selectedTowns : undefined, years),
       fetchHistogram(filters),
       selectedTowns.length ? fetchComparison(selectedTowns, propertyType ? { propertyTypes: [propertyType] } : {}) : Promise.resolve({ rows: [] }),
+      fetchSummary(filters),
     ])
-      .then(([trendsRes, histRes, compRes]) => {
+      .then(([trendsRes, histRes, compRes, summaryRes]) => {
         setTrends(trendsRes.series);
         setHistogram(histRes.buckets);
         setComparison(compRes.rows);
+        setSummary(summaryRes);
       })
       .catch(() => setError("Failed to load analytics data."))
       .finally(() => setLoading(false));
@@ -63,6 +67,8 @@ export default function AnalyticsPage() {
   return (
     <div>
       <h1 className="mb-4 text-xl font-semibold text-slate-900">Market Analytics</h1>
+
+      {summary && <MarketSummaryCards summary={summary} />}
 
       <div className="mb-6 rounded-lg border border-slate-200 bg-white p-4">
         <div className="mb-3 flex flex-wrap items-center gap-4">

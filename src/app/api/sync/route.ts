@@ -3,6 +3,7 @@ import { runSync } from "@/lib/runSync";
 import { getSyncStatus } from "@/lib/syncStatus";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 // Manual refresh clicks from the public UI don't carry SYNC_SECRET (it can't be
 // embedded in client-side JS without defeating its purpose), so this throttle is
