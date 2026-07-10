@@ -3,11 +3,12 @@ import {
   getDefaultSyncQuery,
   getFullSyncQuery,
   RentCastListingProvider,
+  type RawListing,
 } from "@/lib/providers";
 import { COUNTIES } from "@/lib/towns";
 import { ingestRawListings, clearMockListingsIfLiveSource } from "@/lib/ingest";
 import { getSyncStatus, recordSyncStatus } from "@/lib/syncStatus";
-import { hasBudgetFor, recordRentcastUsage, getRentcastUsage } from "@/lib/appConfig";
+import { reserveRentcastRequests, reconcileRentcastUsage, getRentcastUsage } from "@/lib/appConfig";
 import { getTodaysCounty } from "@/lib/syncRotation";
 import type { SyncStatusPayload } from "@/lib/syncStatus";
 
@@ -37,14 +38,20 @@ function sameUtcDay(a: Date, b: Date): boolean {
  * 1. **Daily guard** (mode "daily" only): if a RentCast sync already succeeded
  *    today (UTC), the run becomes a no-op with an explanatory note instead of
  *    spending another API request. Any number of Refresh clicks per day costs
- *    at most one county's worth of requests.
- * 2. **Monthly budget** (all modes): metered request usage is tracked in the
- *    DB (see appConfig.ts) and a run that could exceed the remaining budget is
- *    refused outright, so the app can never overrun RentCast's free tier.
+ *    at most one county's worth of requests. (Best-effort efficiency layer.)
+ * 2. **Monthly budget** (all modes): requests are *atomically reserved* before
+ *    any API call (see `reserveRentcastRequests`), then reconciled down to the
+ *    real count afterward. Because the reservation is a single conditional DB
+ *    UPDATE, the month's total can never exceed the budget even under
+ *    concurrent syncs — this is the hard "never overrun the free tier"
+ *    guarantee, independent of the daily guard's timing.
  */
 export async function runSync(mode: "daily" | "full" = "daily"): Promise<SyncRunResult> {
   const provider = await getActiveProvider();
   const isRentcast = provider.key === "rentcast";
+  // Worst-case request estimate reserved up front: up to 2 pages per county.
+  const estimate = mode === "full" ? COUNTIES.length * 2 : 2;
+  let reserved = false;
 
   if (isRentcast) {
     if (mode === "daily") {
@@ -63,9 +70,7 @@ export async function runSync(mode: "daily" | "full" = "daily"): Promise<SyncRun
       }
     }
 
-    // Worst-case request estimate: 2 pages per county in the query.
-    const estimated = mode === "full" ? COUNTIES.length * 2 : 2;
-    const { ok, usage } = await hasBudgetFor(estimated);
+    const { ok, usage } = await reserveRentcastRequests(estimate);
     if (!ok) {
       const status = await getSyncStatus();
       return {
@@ -75,13 +80,20 @@ export async function runSync(mode: "daily" | "full" = "daily"): Promise<SyncRun
         note: `Monthly RentCast request budget reached (${usage.used}/${usage.budget}). Syncs resume automatically next month.`,
       };
     }
+    reserved = true;
   }
 
-  const query = mode === "full" ? getFullSyncQuery(provider) : getDefaultSyncQuery(provider);
-  const raws = await provider.fetchListings(query);
-
-  if (isRentcast && provider instanceof RentCastListingProvider) {
-    await recordRentcastUsage(provider.lastFetchRequestCount);
+  let raws: RawListing[];
+  try {
+    const query = mode === "full" ? getFullSyncQuery(provider) : getDefaultSyncQuery(provider);
+    raws = await provider.fetchListings(query);
+  } finally {
+    // Settle the reservation against the requests actually made — refunding the
+    // usual over-estimate, and also refunding correctly if the fetch threw
+    // partway (lastFetchRequestCount reflects real attempts either way).
+    if (reserved && provider instanceof RentCastListingProvider) {
+      await reconcileRentcastUsage(estimate, provider.lastFetchRequestCount);
+    }
   }
 
   const results = await ingestRawListings(raws, provider.key);

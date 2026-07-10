@@ -103,9 +103,15 @@ CLI scripts. It layers RentCast-only quota guards on top of fetch→ingest→cle
 
 - **Daily guard** (mode "daily"): if a RentCast sync already succeeded today (UTC), the run is a no-op returning
   `skipped: true` and a human note — so unlimited Refresh clicks cost at most one county's requests per day.
-- **Monthly budget**: `AppConfig.requestsThisMonth` meters actual request counts (via the provider's
-  `lastFetchRequestCount`); runs that could exceed the budget (default 45, env `RENTCAST_MONTHLY_BUDGET`) are
-  refused with `skipped: true`. The app therefore *cannot* overrun RentCast's free tier unattended.
+- **Monthly budget**: `runSync` *atomically reserves* the worst-case request count via
+  `reserveRentcastRequests` (a single conditional `UPDATE "AppConfig" SET requestsThisMonth = ... WHERE ... <=
+  budget`, with month-rollover reset folded in) *before* any API call, then settles it against the real count
+  with `reconcileRentcastUsage` afterward. Because the check-and-increment is one atomic statement, the monthly
+  total provably can't exceed the budget (default 40, env `RENTCAST_MONTHLY_BUDGET`) even under concurrent syncs —
+  Postgres row locking serializes racing reservations. Over-budget runs return `skipped: true`. This atomic
+  reserve is the hard "cannot overrun the free tier" guarantee; the daily guard above is a best-effort efficiency
+  layer on top. (See the concurrency test evidence in commit history: 10 simultaneous reserves against budget 10
+  yield exactly 3 successes.)
 - Every result carries a `note` string that `RefreshContext` surfaces next to the Refresh button ("Pulled Essex
   County (512 listings)", "Today's live data is already in…", "Cleared 732 demo listings…").
 

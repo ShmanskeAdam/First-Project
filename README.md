@@ -84,9 +84,11 @@ for people who prefer them.
   coverage on a rolling basis, nothing more than a week stale.
 - A **daily guard** makes repeat Refresh clicks free: once today's county has synced, further clicks are no-ops
   with an explanatory note ("Today's live data is already in").
-- A **monthly budget meter** (default 45, override with `RENTCAST_MONTHLY_BUDGET` on a paid plan) is tracked in
-  the DB and hard-stops syncing before the cap — the app cannot overrun the free tier no matter who clicks what.
-  Current usage is shown on the Settings page.
+- A **monthly budget meter** (default 40, override with `RENTCAST_MONTHLY_BUDGET` on a paid plan) is tracked in
+  the DB and hard-stops syncing before the cap. Requests are *atomically reserved* before any API call via a
+  single conditional SQL `UPDATE`, so the monthly total can never exceed the budget even if many syncs fire at the
+  exact same instant — this is a provable invariant, not just a check-before-write. Current usage is shown on the
+  Settings page.
 - Duplicates can't happen: every listing upserts by RentCast's own listing ID.
 
 CLI equivalents exist for both modes: `npm run sync` (today's rotating county) and `npm run sync:full` (all 7
