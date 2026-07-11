@@ -22,6 +22,7 @@ const BOUNDS = {
 
 interface FilterPanelProps {
   towns: TownOption[];
+  counties: string[];
   filters: ListingFilters;
   onChange: (filters: ListingFilters) => void;
   presets: FilterPreset[];
@@ -55,6 +56,7 @@ function countActiveFilters(filters: ListingFilters): number {
 
 export function FilterPanel({
   towns,
+  counties,
   filters,
   onChange,
   presets,
@@ -67,8 +69,15 @@ export function FilterPanel({
   const [mobileOpen, setMobileOpen] = useState(false);
 
   const filteredTowns = useMemo(
-    () => towns.filter((t) => t.name.toLowerCase().includes(townSearch.toLowerCase())),
-    [towns, townSearch]
+    () =>
+      towns.filter(
+        (t) =>
+          t.name.toLowerCase().includes(townSearch.toLowerCase()) &&
+          // When counties are selected, only show that county's towns —
+          // keeps the town list manageable with live data's hundreds of towns.
+          (!filters.counties?.length || filters.counties.includes(t.county))
+      ),
+    [towns, townSearch, filters.counties]
   );
 
   const townsByCounty = useMemo(() => {
@@ -178,6 +187,27 @@ export function FilterPanel({
               Save
             </button>
           </div>
+        </div>
+      </Section>
+
+      <Section title="County">
+        <div className="flex flex-wrap gap-2">
+          {counties.map((county) => {
+            const active = (filters.counties ?? []).includes(county);
+            return (
+              <button
+                key={county}
+                type="button"
+                onClick={() => toggleInArray("counties", county)}
+                className={clsx(
+                  "rounded-full border px-2.5 py-1 text-xs font-medium",
+                  active ? "border-brand-600 bg-brand-50 text-brand-700" : "border-slate-300 text-slate-600"
+                )}
+              >
+                {county}
+              </button>
+            );
+          })}
         </div>
       </Section>
 

@@ -52,6 +52,7 @@ function RecentCutsPanel({ cuts }: { cuts: RecentCut[] }) {
 
 export default function DealsPage() {
   const [towns, setTowns] = useState<TownOption[]>([]);
+  const [counties, setCounties] = useState<string[]>([]);
   const [filters, setFilters] = useState<ListingFilters>({});
   const [presets, setPresets] = useState<FilterPreset[]>([]);
   const [rankBy, setRankBy] = useState<"town" | "nj">("town");
@@ -64,7 +65,10 @@ export default function DealsPage() {
 
   useEffect(() => {
     fetchTowns()
-      .then((r) => setTowns(r.towns))
+      .then((r) => {
+        setTowns(r.towns);
+        setCounties(r.counties);
+      })
       .catch(() => undefined);
     fetchPresets()
       .then((r) => setPresets(r.presets))
@@ -108,6 +112,7 @@ export default function DealsPage() {
     <div className="flex flex-col gap-6 lg:flex-row">
       <FilterPanel
         towns={towns}
+        counties={counties}
         filters={filters}
         onChange={setFilters}
         presets={presets}

@@ -2,10 +2,17 @@ import {
   getActiveProvider,
   getDefaultSyncQuery,
   getFullSyncQuery,
+  RentCastListingProvider,
 } from "@/lib/providers";
 import { ingestRawListings, clearMockListingsIfLiveSource } from "@/lib/ingest";
 import { getSyncStatus, recordSyncStatus } from "@/lib/syncStatus";
-import { reserveRentcastRequest, getRentcastUsage } from "@/lib/appConfig";
+import {
+  reserveRentcastRequest,
+  getRentcastUsage,
+  claimCatchUpFullSync,
+  resetCatchUpClaim,
+  markFullSyncCompleted,
+} from "@/lib/appConfig";
 import { getTodaysCounty } from "@/lib/syncRotation";
 import type { SyncStatusPayload } from "@/lib/syncStatus";
 
@@ -47,9 +54,22 @@ function sameUtcDay(a: Date, b: Date): boolean {
 export async function runSync(mode: "daily" | "full" = "daily"): Promise<SyncRunResult> {
   const provider = await getActiveProvider();
   const isRentcast = provider.key === "rentcast";
+  let effectiveMode: "daily" | "full" = mode;
+  let claimedCatchUp = false;
 
   if (isRentcast) {
+    // Catch-up escalation: if no comprehensive (all-county, fully-paginated)
+    // pull has ever completed — first connect, or a deployment upgraded from
+    // code that capped pagination — the next daily trigger claims the job
+    // atomically and runs a FULL pull instead, bypassing the daily guard.
+    // Exactly one caller can claim it, so simultaneous Refresh clicks can't
+    // both launch full pulls; the site self-heals with zero manual steps.
     if (mode === "daily") {
+      claimedCatchUp = await claimCatchUpFullSync();
+      if (claimedCatchUp) effectiveMode = "full";
+    }
+
+    if (effectiveMode === "daily") {
       const status = await getSyncStatus();
       if (
         status.provider === "rentcast" &&
@@ -69,6 +89,8 @@ export async function runSync(mode: "daily" | "full" = "daily"): Promise<SyncRun
     // budget is already spent, don't even start.
     const usage = await getRentcastUsage();
     if (usage.used >= usage.budget) {
+      // Give the catch-up back so it runs when budget returns (next month).
+      if (claimedCatchUp) await resetCatchUpClaim();
       const status = await getSyncStatus();
       return {
         ...status,
@@ -79,10 +101,26 @@ export async function runSync(mode: "daily" | "full" = "daily"): Promise<SyncRun
     }
   }
 
-  const baseQuery = mode === "full" ? getFullSyncQuery(provider) : getDefaultSyncQuery(provider);
-  // Attach the atomic budget gate for RentCast; other providers ignore it.
-  const query = isRentcast ? { ...baseQuery, requestGate: reserveRentcastRequest } : baseQuery;
-  const raws = await provider.fetchListings(query);
+  let raws;
+  try {
+    const baseQuery = effectiveMode === "full" ? getFullSyncQuery(provider) : getDefaultSyncQuery(provider);
+    // Attach the atomic budget gate for RentCast; other providers ignore it.
+    const query = isRentcast ? { ...baseQuery, requestGate: reserveRentcastRequest } : baseQuery;
+    raws = await provider.fetchListings(query);
+  } catch (err) {
+    // A failed catch-up must not count as done — release the claim to retry later.
+    if (claimedCatchUp) await resetCatchUpClaim();
+    throw err;
+  }
+
+  const gateDenied = provider instanceof RentCastListingProvider && provider.lastFetchGateDenied;
+  if (isRentcast && effectiveMode === "full" && !claimedCatchUp) {
+    // Explicit full runs (connect flow, sync:full) also count as the comprehensive pull.
+    await markFullSyncCompleted();
+  }
+  // Note: a budget-truncated full pull still counts as claimed/completed — the
+  // daily rotation now paginates fully, so any shortfall converges to complete
+  // coverage over the following week without re-burning a full pull each day.
 
   const results = await ingestRawListings(raws, provider.key);
   const clearedMockListings = await clearMockListingsIfLiveSource(provider.key);
@@ -92,11 +130,15 @@ export async function runSync(mode: "daily" | "full" = "daily"): Promise<SyncRun
   if (isRentcast) {
     const usage = await getRentcastUsage();
     const cleared = clearedMockListings > 0 ? ` Cleared ${clearedMockListings.toLocaleString()} demo listings.` : "";
-    const budgetHit = usage.used >= usage.budget ? " Monthly API budget now reached; more will sync next month." : "";
+    const partial = gateDenied
+      ? " Monthly API budget hit mid-pull — the remaining areas fill in automatically on upcoming syncs."
+      : usage.used >= usage.budget
+        ? " Monthly API budget now reached; more will sync next month."
+        : "";
     note =
-      mode === "full"
-        ? `Pulled ${raws.length.toLocaleString()} live listings across North NJ.${cleared} API budget used: ${usage.used}/${usage.budget} this month.${budgetHit}`
-        : `Pulled ${getTodaysCounty()} County (${raws.length.toLocaleString()} listings).${cleared}${budgetHit}`;
+      effectiveMode === "full"
+        ? `Pulled ${raws.length.toLocaleString()} live listings across all of North NJ (every town, no cap).${cleared} API budget used: ${usage.used}/${usage.budget} this month.${partial}`
+        : `Pulled ${getTodaysCounty()} County (${raws.length.toLocaleString()} listings).${cleared}${partial}`;
   } else if (clearedMockListings > 0) {
     note = `Cleared ${clearedMockListings.toLocaleString()} demo listings — now showing real data.`;
   }

@@ -23,6 +23,7 @@ const PAGE_SIZE_OPTIONS = [25, 50, 100];
 
 export default function ListingsPage() {
   const [towns, setTowns] = useState<TownOption[]>([]);
+  const [counties, setCounties] = useState<string[]>([]);
   const [filters, setFilters] = useState<ListingFilters>({});
   const [presets, setPresets] = useState<FilterPreset[]>([]);
   const [view, setView] = useState<"table" | "grid">("table");
@@ -38,7 +39,10 @@ export default function ListingsPage() {
 
   useEffect(() => {
     fetchTowns()
-      .then((r) => setTowns(r.towns))
+      .then((r) => {
+        setTowns(r.towns);
+        setCounties(r.counties);
+      })
       .catch(() => undefined);
     fetchPresets()
       .then((r) => setPresets(r.presets))
@@ -95,6 +99,7 @@ export default function ListingsPage() {
     <div className="flex flex-col gap-6 lg:flex-row">
       <FilterPanel
         towns={towns}
+        counties={counties}
         filters={filters}
         onChange={handleFiltersChange}
         presets={presets}

@@ -1,14 +1,16 @@
 import { prisma } from "@/lib/db";
 
 /**
- * RentCast's free tier allows 50 requests/month. The app self-limits to a
- * lower budget (40) so that even a full month of daily 2-request syncs
- * (~38 requests) plus a bit of slack stays clear of the cap with margin.
+ * RentCast's free tier allows 50 requests/month. The app self-limits to 45 —
+ * metering is exact (one atomic reservation per real request), so the only
+ * reason for slack is requests made outside this app (e.g. testing the key in
+ * RentCast's own dashboard). 45 leaves room for a comprehensive all-county
+ * pull (~20-30 requests) plus daily one-county refreshes in the same month.
  * Override with RENTCAST_MONTHLY_BUDGET (e.g. on a paid RentCast plan).
  */
 export function getMonthlyBudget(): number {
   const fromEnv = Number(process.env.RENTCAST_MONTHLY_BUDGET);
-  return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : 40;
+  return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : 45;
 }
 
 function currentMonthKey(now: Date = new Date()): string {
@@ -74,6 +76,39 @@ export async function getRentcastUsage(): Promise<RentcastUsage> {
  * usage with no estimate/reconcile gap — which is what lets a sync paginate an
  * entire county with no fixed page cap while staying provably under budget.
  */
+/**
+ * Atomically claim the one-time "catch-up" comprehensive pull. Returns true
+ * for exactly one caller while `lastFullSyncAt` is null (the set-if-null is a
+ * single conditional UPDATE, so two same-instant Refresh clicks can't both
+ * launch a full pull). A null `lastFullSyncAt` means no all-county,
+ * fully-paginated pull has completed under the current code — true both on
+ * first connect and after upgrading a deployment that previously capped
+ * pagination, which is how the site self-heals to complete coverage.
+ */
+export async function claimCatchUpFullSync(): Promise<boolean> {
+  await prisma.appConfig.upsert({ where: { id: "default" }, create: { id: "default" }, update: {} });
+  const affected = await prisma.$executeRaw`
+    UPDATE "AppConfig"
+    SET "lastFullSyncAt" = NOW(), "updatedAt" = NOW()
+    WHERE "id" = 'default' AND "lastFullSyncAt" IS NULL
+  `;
+  return affected > 0;
+}
+
+/** Undo a catch-up claim whose run failed, so a later sync retries it. */
+export async function resetCatchUpClaim(): Promise<void> {
+  await prisma.appConfig.update({ where: { id: "default" }, data: { lastFullSyncAt: null } }).catch(() => undefined);
+}
+
+/** Record that a deliberate full pull (connect flow / sync:full) completed. */
+export async function markFullSyncCompleted(): Promise<void> {
+  await prisma.appConfig.upsert({
+    where: { id: "default" },
+    create: { id: "default", lastFullSyncAt: new Date() },
+    update: { lastFullSyncAt: new Date() },
+  });
+}
+
 export async function reserveRentcastRequest(): Promise<boolean> {
   const month = currentMonthKey();
   const budget = getMonthlyBudget();

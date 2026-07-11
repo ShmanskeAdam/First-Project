@@ -87,6 +87,9 @@ for people who prefer them.
   what RentCast returns.
 - **Land-only listings are excluded from Top Deals**: a $1/sqft floor plus a scoring guard mean lots with no
   house (0 sqft) can never masquerade as underpriced deals.
+- **Self-healing after upgrades**: if the deployed site's data was pulled under older, capped code (or a full
+  pull has never completed), the very next sync — the daily cron or one Refresh click — automatically escalates
+  itself to a full all-county pull. No redeploy ritual, no manual re-sync command.
 
 ### How it stays inside RentCast's free tier (50 requests/month) unattended
 
@@ -95,7 +98,7 @@ for people who prefer them.
   room for daily refreshes; the free tier can hold the whole dataset, it just can't re-pull all of it daily.)
 - A **daily guard** makes repeat Refresh clicks free: once today's county has synced, further clicks are no-ops
   with an explanatory note ("Today's live data is already in").
-- A **monthly budget meter** (default 40, override with `RENTCAST_MONTHLY_BUDGET` on a paid plan) is tracked in
+- A **monthly budget meter** (default 45, override with `RENTCAST_MONTHLY_BUDGET` on a paid plan) is tracked in
   the DB. Each API request is **atomically reserved** — a single conditional SQL `UPDATE` before every network
   call — so the monthly total can never exceed the budget even under concurrent syncs, and pagination simply
   stops mid-run if the budget is hit (the rest fills in on later syncs). This is a provable invariant, not a

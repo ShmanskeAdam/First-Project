@@ -141,11 +141,17 @@ model SyncStatus {
 // hard-stop itself under the free tier's 50 requests/month, no matter how
 // often any visitor clicks Refresh.
 model AppConfig {
-  id                String   @id @default("default")
+  id                String    @id @default("default")
   rentcastApiKey    String?
-  requestsThisMonth Int      @default(0)
+  requestsThisMonth Int       @default(0)
   requestMonth      String? // "YYYY-MM" the counter applies to; reset on rollover
-  updatedAt         DateTime @updatedAt
+  // When the last comprehensive (all-county, fully-paginated) RentCast pull
+  // ran. Null means one hasn't happened yet under the current unlimited-
+  // pagination code — the next daily sync escalates itself to a full pull
+  // (see runSync's catch-up logic), which is how an already-deployed site
+  // self-heals to complete coverage after a code upgrade, with no manual step.
+  lastFullSyncAt    DateTime?
+  updatedAt         DateTime  @updatedAt
 }
 
 // User-saved filter presets so common searches can be reapplied with one click.

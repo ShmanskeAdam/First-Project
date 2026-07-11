@@ -100,12 +100,22 @@ fully hands-off.
 (`POST /api/sync`), the Vercel cron (`GET /api/cron/sync`), the Settings connect flow (mode "full"), and the two
 CLI scripts. It layers RentCast-only quota guards on top of fetch→ingest→clear-mock→record-status:
 
-- **Daily guard** (mode "daily"): if a RentCast sync already succeeded today (UTC), the run is a no-op returning
-  `skipped: true` and a human note — so unlimited Refresh clicks cost at most one county's requests per day.
+- **Catch-up escalation** (mode "daily", checked first): if `AppConfig.lastFullSyncAt` is **null** — first
+  connect, or a deployment upgraded from code whose pagination was capped — the daily trigger atomically claims
+  the catch-up (`claimCatchUpFullSync`, a set-if-null conditional UPDATE so two simultaneous Refresh clicks can't
+  both launch it) and runs a **full all-county pull instead**, bypassing the daily guard. This is how an
+  already-deployed site self-heals to comprehensive coverage within one cron tick / Refresh click after a code
+  upgrade, with zero manual steps. A crashed or budget-blocked catch-up releases the claim (`resetCatchUpClaim`)
+  so it retries later; explicit full runs (connect flow, `sync:full`) set the marker via `markFullSyncCompleted`.
+  A budget-*truncated* catch-up still counts as done — the daily rotation paginates fully, so coverage converges
+  over the following week instead of re-burning a full pull every day.
+- **Daily guard** (mode "daily", no catch-up pending): if a RentCast sync already succeeded today (UTC), the run
+  is a no-op returning `skipped: true` and a human note — so unlimited Refresh clicks cost at most one county's
+  requests per day.
 - **Monthly budget**: `runSync` attaches `reserveRentcastRequest` (`appConfig.ts`) as the query's `requestGate`.
   It reserves **exactly one** request per network call via a single conditional `UPDATE "AppConfig" SET
   requestsThisMonth = ... WHERE ... + 1 <= budget` (month-rollover reset folded in). Because each check-and-
-  increment is one atomic statement, the monthly total provably can't exceed the budget (default 40, env
+  increment is one atomic statement, the monthly total provably can't exceed the budget (default 45, env
   `RENTCAST_MONTHLY_BUDGET`) even under concurrent syncs — Postgres row locking serializes racing reservations —
   and, since it's reserved per actual request (no worst-case estimate), pagination can run unbounded and simply
   stops when the gate denies. `runSync` also does a friendly upfront `used >= budget` check to return
@@ -149,11 +159,12 @@ happened incrementally.
   `fetched`, `ingested`), written by every sync path and read by the nav bar's "Last refreshed" indicator. Also
   what the daily guard checks ("did a rentcast sync already happen today?").
 - **`AppConfig`** — single row (`id: "default"`): `rentcastApiKey` (write-only via the Settings page; never
-  echoed by any API) plus `requestsThisMonth`/`requestMonth`, the RentCast monthly budget meter. Being DB-stored
-  is the whole point: connecting live data and enforcing quota both survive redeploys and require no env-var
-  changes. Note the trade-off accepted here: `PUT /api/settings` is unauthenticated (like the scoring weights
-  always were), so a stranger could *overwrite* the key — but never read it, and the budget meter bounds any
-  abuse; re-pasting recovers.
+  echoed by any API), `requestsThisMonth`/`requestMonth` (the RentCast monthly budget meter), and
+  `lastFullSyncAt` (null = no comprehensive all-county pull has completed → the next daily sync escalates itself
+  to one; see "Catch-up escalation" above). Being DB-stored is the whole point: connecting live data and enforcing
+  quota both survive redeploys and require no env-var changes. Note the trade-off accepted here:
+  `PUT /api/settings` is unauthenticated (like the scoring weights always were), so a stranger could *overwrite*
+  the key — but never read it, and the budget meter bounds any abuse; re-pasting recovers.
 
 ## Deal-scoring engine (`src/lib/scoring/`)
 
@@ -221,6 +232,10 @@ county)` pairs actually present in `Listing` (a `groupBy`), falling back to the 
 DB is empty. This is what makes town filtering work with live RentCast data — which spans hundreds of NJ
 municipalities well beyond the 51-town seed list — since every option is by construction an exact stored value.
 The client type for these is `TownOption` (`{ name, county }`), deliberately looser than `TownInfo`.
+
+The panel also has a **County** section (chips for the 7 North NJ counties, wired to `ListingFilters.counties`,
+which `buildListingWhere` already supported). Selecting counties additionally narrows the *displayed* town
+checkbox list to those counties — purely visual, but essential once live data brings in hundreds of towns.
 
 ## Adding a town
 

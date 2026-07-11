@@ -36,6 +36,9 @@ export class RentCastListingProvider implements ListingProvider {
   /** How many billed API requests the most recent fetchListings() call made — read by the quota meter. */
   lastFetchRequestCount = 0;
 
+  /** True when the most recent fetchListings() stopped early because the requestGate denied a request (budget hit). */
+  lastFetchGateDenied = false;
+
   constructor(private apiKey: string) {
     if (!apiKey) {
       throw new Error("RentCastListingProvider requires an API key (set RENTCAST_API_KEY)");
@@ -53,6 +56,7 @@ export class RentCastListingProvider implements ListingProvider {
     const maxPages = query?.maxPagesPerArea ?? SAFETY_MAX_PAGES_PER_AREA;
     const results: RawListing[] = [];
     this.lastFetchRequestCount = 0;
+    this.lastFetchGateDenied = false;
 
     for (const county of counties) {
       let offset = 0;
@@ -61,6 +65,7 @@ export class RentCastListingProvider implements ListingProvider {
         // budget exhausted) stops pagination cleanly — the county keeps
         // whatever pages it already pulled, the rest come on a later sync.
         if (query?.requestGate && !(await query.requestGate())) {
+          this.lastFetchGateDenied = true;
           return results;
         }
 
