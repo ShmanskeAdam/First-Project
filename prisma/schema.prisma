@@ -151,6 +151,12 @@ model AppConfig {
   // (see runSync's catch-up logic), which is how an already-deployed site
   // self-heals to complete coverage after a code upgrade, with no manual step.
   lastFullSyncAt    DateTime?
+  // Which coverage the last full pull actually achieved — a signature of the
+  // county list AND the query strategy (see SYNC_COVERAGE_VERSION). When the
+  // deployed code's signature differs, the stored data was gathered a
+  // different (possibly wrong) way, so the next sync re-runs a full pull and
+  // discards the stale rows rather than leaving them to linger forever.
+  fullSyncCoverage  String?
   updatedAt         DateTime  @updatedAt
 }
 

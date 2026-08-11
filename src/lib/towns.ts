@@ -2,16 +2,74 @@
 // Add a town by adding one entry here — everything else (filters, seed data
 // generation, town-comparison charts) reads from this list.
 
+/** The North NJ counties this tracker covers. */
+export const COUNTIES = [
+  "Bergen",
+  "Essex",
+  "Hudson",
+  "Morris",
+  "Passaic",
+  "Union",
+  "Somerset",
+  "Sussex",
+  "Warren",
+  "Hunterdon",
+] as const;
+
+export type County = (typeof COUNTIES)[number];
+
+/** Fast membership test used to discard out-of-region listings a radius search pulls in. */
+const COUNTY_SET: ReadonlySet<string> = new Set(COUNTIES);
+
+export function isNorthNjCounty(county: string | null | undefined): county is County {
+  return !!county && COUNTY_SET.has(county);
+}
+
+/**
+ * Circular search areas, one per county — how the RentCast provider actually
+ * queries listings.
+ *
+ * RentCast's `/listings/sale` supports searching by address, by city/state/zip,
+ * or by a **circular geographical area** (latitude + longitude + radius). It
+ * does NOT support a `county` filter: passing `county=Essex&state=NJ` silently
+ * ignores the county and matches on the state alone, returning a statewide
+ * slice. (That bug is exactly why the app once showed 2 Montclair listings and
+ * filed towns under the wrong counties.) Per-county circles are the supported
+ * way to get real geographic partitioning without paying one request per town.
+ *
+ * Radii are sized to cover each county's full extent, so circles overlap and
+ * spill past county/state lines. Both are harmless: ingestion dedupes on
+ * `(source, externalId)`, and every listing is attributed to the county
+ * RentCast itself reports, with anything outside `COUNTIES` discarded.
+ */
+export interface CountySearchArea {
+  county: County;
+  lat: number;
+  lng: number;
+  /** Miles; sized to cover the whole county from its centroid. */
+  radius: number;
+}
+
+export const COUNTY_SEARCH_AREAS: CountySearchArea[] = [
+  { county: "Bergen", lat: 40.96, lng: -74.07, radius: 11 },
+  { county: "Essex", lat: 40.79, lng: -74.25, radius: 10 },
+  { county: "Hudson", lat: 40.73, lng: -74.07, radius: 8 },
+  { county: "Morris", lat: 40.86, lng: -74.55, radius: 15 },
+  { county: "Passaic", lat: 41.03, lng: -74.3, radius: 15 },
+  { county: "Union", lat: 40.66, lng: -74.31, radius: 10 },
+  { county: "Somerset", lat: 40.56, lng: -74.62, radius: 14 },
+  { county: "Sussex", lat: 41.14, lng: -74.69, radius: 16 },
+  { county: "Warren", lat: 40.86, lng: -74.99, radius: 15 },
+  { county: "Hunterdon", lat: 40.57, lng: -74.91, radius: 15 },
+];
+
+export function getCountySearchArea(county: string): CountySearchArea | undefined {
+  return COUNTY_SEARCH_AREAS.find((a) => a.county === county);
+}
+
 export interface TownInfo {
   name: string;
-  county:
-    | "Bergen"
-    | "Essex"
-    | "Hudson"
-    | "Morris"
-    | "Passaic"
-    | "Union"
-    | "Somerset";
+  county: County;
   /** Rough driving distance in miles to the nearest NJ Transit / PATH station, used to seed mock commute data. */
   nearestTransitStation: string;
 }
@@ -81,6 +139,23 @@ export const TOWNS: TownInfo[] = [
   { name: "Bernards", county: "Somerset", nearestTransitStation: "Basking Ridge Station" },
   { name: "Warren", county: "Somerset", nearestTransitStation: "Gladstone Station" },
   { name: "Hillsborough", county: "Somerset", nearestTransitStation: "Raritan Station" },
+
+  // Sussex
+  { name: "Newton", county: "Sussex", nearestTransitStation: "Netcong Station" },
+  { name: "Sparta", county: "Sussex", nearestTransitStation: "Netcong Station" },
+  { name: "Vernon", county: "Sussex", nearestTransitStation: "Netcong Station" },
+  { name: "Hopatcong", county: "Sussex", nearestTransitStation: "Lake Hopatcong Station" },
+
+  // Warren
+  { name: "Hackettstown", county: "Warren", nearestTransitStation: "Hackettstown Station" },
+  { name: "Phillipsburg", county: "Warren", nearestTransitStation: "Hackettstown Station" },
+  { name: "Washington", county: "Warren", nearestTransitStation: "Hackettstown Station" },
+
+  // Hunterdon
+  { name: "Flemington", county: "Hunterdon", nearestTransitStation: "Raritan Station" },
+  { name: "Clinton", county: "Hunterdon", nearestTransitStation: "High Bridge Station" },
+  { name: "Lambertville", county: "Hunterdon", nearestTransitStation: "Trenton Transit Center" },
+  { name: "Readington", county: "Hunterdon", nearestTransitStation: "White House Station" },
 ];
 
 /**
@@ -96,16 +171,6 @@ export interface TownOption {
 }
 
 export const TOWN_NAMES = TOWNS.map((t) => t.name);
-
-export const COUNTIES = [
-  "Bergen",
-  "Essex",
-  "Hudson",
-  "Morris",
-  "Passaic",
-  "Union",
-  "Somerset",
-] as const;
 
 export function getTownInfo(name: string): TownInfo | undefined {
   return TOWNS.find((t) => t.name === name);

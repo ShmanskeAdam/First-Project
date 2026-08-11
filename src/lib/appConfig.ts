@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { COUNTIES } from "@/lib/towns";
 
 /**
  * RentCast's free tier allows 50 requests/month. The app self-limits to 45 —
@@ -77,35 +78,67 @@ export async function getRentcastUsage(): Promise<RentcastUsage> {
  * entire county with no fixed page cap while staying provably under budget.
  */
 /**
- * Atomically claim the one-time "catch-up" comprehensive pull. Returns true
- * for exactly one caller while `lastFullSyncAt` is null (the set-if-null is a
- * single conditional UPDATE, so two same-instant Refresh clicks can't both
- * launch a full pull). A null `lastFullSyncAt` means no all-county,
- * fully-paginated pull has completed under the current code — true both on
- * first connect and after upgrading a deployment that previously capped
- * pagination, which is how the site self-heals to complete coverage.
+ * Signature of what a comprehensive pull currently *means*: the query strategy
+ * plus the exact county list. Stored alongside `lastFullSyncAt`; when the
+ * deployed code's signature differs from what's stored, the existing rows were
+ * gathered under different (and, for `county-param-v0`, outright broken —
+ * RentCast has no county filter, so those rows are a mis-attributed statewide
+ * slice) rules. runSync then re-runs a full pull and drops the stale rows.
+ * Bump this whenever a change alters which listings a full sync should yield.
+ */
+export const SYNC_COVERAGE_VERSION = `radius-v1:${COUNTIES.join(",")}`;
+
+/** True when stored coverage differs from what this build produces (or nothing was ever pulled). */
+export async function needsCoverageCatchUp(): Promise<boolean> {
+  const row = await getRow();
+  return row.lastFullSyncAt === null || row.fullSyncCoverage !== SYNC_COVERAGE_VERSION;
+}
+
+/**
+ * True when listings are already stored under a *different* coverage signature
+ * — i.e. gathered by superseded (possibly incorrect) query rules, so the next
+ * full pull should replace them rather than merge into them. A first-ever sync
+ * (no stored coverage and no data) is not "stale": there's nothing to discard.
+ */
+export async function hasStaleCoverageData(): Promise<boolean> {
+  const row = await getRow();
+  if (row.fullSyncCoverage === SYNC_COVERAGE_VERSION) return false;
+  const existing = await prisma.listing.count({ where: { source: { not: "mock" } } });
+  return existing > 0;
+}
+
+/**
+ * Atomically claim the "catch-up" comprehensive pull. Returns true for exactly
+ * one caller while the stored coverage is missing or stale (the conditional
+ * UPDATE is a single statement, so two same-instant Refresh clicks can't both
+ * launch a full pull). This is how an already-deployed site self-heals — after
+ * first connect, after a pagination fix, or after the county list / query
+ * strategy changes — with no manual step.
  */
 export async function claimCatchUpFullSync(): Promise<boolean> {
   await prisma.appConfig.upsert({ where: { id: "default" }, create: { id: "default" }, update: {} });
   const affected = await prisma.$executeRaw`
     UPDATE "AppConfig"
-    SET "lastFullSyncAt" = NOW(), "updatedAt" = NOW()
-    WHERE "id" = 'default' AND "lastFullSyncAt" IS NULL
+    SET "lastFullSyncAt" = NOW(), "fullSyncCoverage" = ${SYNC_COVERAGE_VERSION}, "updatedAt" = NOW()
+    WHERE "id" = 'default'
+      AND ("lastFullSyncAt" IS NULL OR "fullSyncCoverage" IS DISTINCT FROM ${SYNC_COVERAGE_VERSION})
   `;
   return affected > 0;
 }
 
 /** Undo a catch-up claim whose run failed, so a later sync retries it. */
 export async function resetCatchUpClaim(): Promise<void> {
-  await prisma.appConfig.update({ where: { id: "default" }, data: { lastFullSyncAt: null } }).catch(() => undefined);
+  await prisma.appConfig
+    .update({ where: { id: "default" }, data: { lastFullSyncAt: null, fullSyncCoverage: null } })
+    .catch(() => undefined);
 }
 
 /** Record that a deliberate full pull (connect flow / sync:full) completed. */
 export async function markFullSyncCompleted(): Promise<void> {
   await prisma.appConfig.upsert({
     where: { id: "default" },
-    create: { id: "default", lastFullSyncAt: new Date() },
-    update: { lastFullSyncAt: new Date() },
+    create: { id: "default", lastFullSyncAt: new Date(), fullSyncCoverage: SYNC_COVERAGE_VERSION },
+    update: { lastFullSyncAt: new Date(), fullSyncCoverage: SYNC_COVERAGE_VERSION },
   });
 }
 

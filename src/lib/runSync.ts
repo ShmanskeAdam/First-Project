@@ -4,7 +4,7 @@ import {
   getFullSyncQuery,
   RentCastListingProvider,
 } from "@/lib/providers";
-import { ingestRawListings, clearMockListingsIfLiveSource } from "@/lib/ingest";
+import { ingestRawListings, clearMockListingsIfLiveSource, purgeListingsForSource } from "@/lib/ingest";
 import { getSyncStatus, recordSyncStatus } from "@/lib/syncStatus";
 import {
   reserveRentcastRequest,
@@ -12,8 +12,10 @@ import {
   claimCatchUpFullSync,
   resetCatchUpClaim,
   markFullSyncCompleted,
+  hasStaleCoverageData,
 } from "@/lib/appConfig";
 import { getTodaysCounty } from "@/lib/syncRotation";
+import { COUNTIES } from "@/lib/towns";
 import type { SyncStatusPayload } from "@/lib/syncStatus";
 
 export interface SyncRunResult extends SyncStatusPayload {
@@ -56,6 +58,7 @@ export async function runSync(mode: "daily" | "full" = "daily"): Promise<SyncRun
   const isRentcast = provider.key === "rentcast";
   let effectiveMode: "daily" | "full" = mode;
   let claimedCatchUp = false;
+  let staleCoverage = false;
 
   if (isRentcast) {
     // Catch-up escalation: if no comprehensive (all-county, fully-paginated)
@@ -65,6 +68,11 @@ export async function runSync(mode: "daily" | "full" = "daily"): Promise<SyncRun
     // Exactly one caller can claim it, so simultaneous Refresh clicks can't
     // both launch full pulls; the site self-heals with zero manual steps.
     if (mode === "daily") {
+      // Note whether anything was already stored under a *different* coverage
+      // signature: those rows were gathered under superseded rules (e.g. the
+      // broken county-param query that returned a mis-attributed statewide
+      // slice) and must be discarded rather than merged with correct data.
+      staleCoverage = await hasStaleCoverageData();
       claimedCatchUp = await claimCatchUpFullSync();
       if (claimedCatchUp) effectiveMode = "full";
     }
@@ -122,6 +130,15 @@ export async function runSync(mode: "daily" | "full" = "daily"): Promise<SyncRun
   // daily rotation now paginates fully, so any shortfall converges to complete
   // coverage over the following week without re-burning a full pull each day.
 
+  // A coverage-changing catch-up replaces the dataset rather than merging into
+  // it: rows from the superseded strategy that this pull doesn't return would
+  // otherwise linger forever with wrong county attribution. Delete only after
+  // the fetch succeeds, so a failed pull never leaves the site empty.
+  let purgedStaleListings = 0;
+  if (claimedCatchUp && staleCoverage && raws.length > 0) {
+    purgedStaleListings = await purgeListingsForSource(provider.key);
+  }
+
   const results = await ingestRawListings(raws, provider.key);
   const clearedMockListings = await clearMockListingsIfLiveSource(provider.key);
   const status = await recordSyncStatus(provider.key, raws.length, results.length);
@@ -130,15 +147,26 @@ export async function runSync(mode: "daily" | "full" = "daily"): Promise<SyncRun
   if (isRentcast) {
     const usage = await getRentcastUsage();
     const cleared = clearedMockListings > 0 ? ` Cleared ${clearedMockListings.toLocaleString()} demo listings.` : "";
+    const replaced = purgedStaleListings > 0 ? ` Replaced ${purgedStaleListings.toLocaleString()} stale listings.` : "";
     const partial = gateDenied
       ? " Monthly API budget hit mid-pull — the remaining areas fill in automatically on upcoming syncs."
       : usage.used >= usage.budget
         ? " Monthly API budget now reached; more will sync next month."
         : "";
+    // Per-county counts make coverage auditable at a glance ("is Essex really
+    // in there?") instead of hiding behind a single total.
+    const counts =
+      provider instanceof RentCastListingProvider
+        ? Object.entries(provider.lastFetchCountyCounts)
+            .sort((a, b) => b[1] - a[1])
+            .map(([c, n]) => `${c} ${n.toLocaleString()}`)
+            .join(", ")
+        : "";
+    const breakdown = counts ? ` By county: ${counts}.` : "";
     note =
       effectiveMode === "full"
-        ? `Pulled ${raws.length.toLocaleString()} live listings across all of North NJ (every town, no cap).${cleared} API budget used: ${usage.used}/${usage.budget} this month.${partial}`
-        : `Pulled ${getTodaysCounty()} County (${raws.length.toLocaleString()} listings).${cleared}${partial}`;
+        ? `Pulled ${raws.length.toLocaleString()} live listings across all ${COUNTIES.length} North NJ counties (every town, no cap).${breakdown}${cleared}${replaced} API budget used: ${usage.used}/${usage.budget} this month.${partial}`
+        : `Pulled ${getTodaysCounty()} County (${raws.length.toLocaleString()} listings).${cleared}${replaced}${partial}`;
   } else if (clearedMockListings > 0) {
     note = `Cleared ${clearedMockListings.toLocaleString()} demo listings — now showing real data.`;
   }

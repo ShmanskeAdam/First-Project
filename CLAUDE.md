@@ -46,18 +46,32 @@ Implementations, all in `src/lib/providers/`:
   as a fallback.) The key is write-only: `GET /api/settings` reports only `rentcastConfigured` + a last-4 hint,
   never the key. Connecting validates the key by immediately running a full sync — a 401/403 raises
   `RentCastAuthError`, which the settings route catches to un-store the bad key and report it.
-  Calls `GET /listings/sale` **per county** (`county` + `state` params), not per town — fewer requests for the
-  same coverage. `fetchListings` requires an explicit `counties` list (`ListingProviderQuery.counties`) and
-  **paginates each county fully** (500/page, RentCast's max, no listing cap — a `SAFETY_MAX_PAGES_PER_AREA=40`
-  bound only guards against a runaway loop). The real limiter is `ListingProviderQuery.requestGate`: an
-  optional `() => Promise<boolean>` the provider calls before *every* network request; `runSync` wires it to the
-  atomic budget reservation, so a denial stops pagination cleanly mid-county (the rest fills in on a later sync).
-  `lastFetchRequestCount` exposes how many pages were fetched.
+  **⚠️ `GET /listings/sale` has NO county filter.** Its documented search modes are: a specific address;
+  `city`/`state`/`zipCode`; or a **circular area** (`latitude` + `longitude` + `radius`). An unsupported `county`
+  param is silently *ignored*, degrading the request to an unfiltered `state=NJ` query — which is precisely the
+  bug that once made the site show 2 Montclair listings and file towns under the wrong counties. Do not
+  reintroduce it.
+  So the provider queries **one circular area per county**, from `COUNTY_SEARCH_AREAS` in `towns.ts` (centroid +
+  a radius covering the county). Per-town queries would also be accurate but cost ~270 requests for North NJ,
+  far past the free tier. Circles overlap and spill across county/state lines; both are harmless because
+  ingestion dedupes on `(source, externalId)` and **every listing is attributed to the county RentCast itself
+  returns** (`raw.county`), never to the county searched, with rows outside `COUNTIES` dropped. Attribution falls
+  back to the curated town→county map, then (NJ rows only) the searched county.
+  `fetchListings` requires an explicit `counties` list (`ListingProviderQuery.counties`) and **paginates each
+  area fully** (500/page, RentCast's max, no listing cap — a `SAFETY_MAX_PAGES_PER_AREA=40` bound only guards
+  against a runaway loop). The real limiter is `ListingProviderQuery.requestGate`: an optional
+  `() => Promise<boolean>` the provider calls before *every* network request; `runSync` wires it to the atomic
+  budget reservation, so a denial stops pagination cleanly mid-area (the rest fills in on a later sync).
+  `lastFetchRequestCount`, `lastFetchCountyCounts` and `lastFetchDiscarded` expose pages fetched, the per-county
+  breakdown (surfaced in the sync note so coverage is auditable), and how many rows were dropped as out-of-region.
   - `getDefaultSyncQuery()` (`providers/index.ts`) is the automatic path (Refresh button, `npm run sync`, cron):
     **one county per calendar day**, picked deterministically by `src/lib/syncRotation.ts` (`getTodaysCounty()`,
-    a `dayOfYear % 7` index into `COUNTIES`). Full North NJ coverage refreshes on a rolling ~weekly basis.
-  - `getFullSyncQuery()` (connect flow + `npm run sync:full`): all 7 counties, each paginated fully — pulls the
-    entire active for-sale dataset (~20-30 requests total, comfortably one month's budget). Gated the same way.
+    a `dayOfYear % COUNTIES.length` index into `COUNTIES`). With 10 counties, coverage refreshes on a rolling
+    ~10-day basis.
+  - `getFullSyncQuery()` (connect flow + `npm run sync:full`): all 10 counties, each paginated fully — pulls the
+    entire active for-sale dataset. Gated the same way. Note this can genuinely exceed a month's free-tier budget
+    (North NJ inventory ÷ 500 per page, plus overlap between circles); the gate stops it cleanly and the rotation
+    fills in the remainder, so coverage converges rather than failing.
 - **`CsvListingProvider`** (`csvProvider.ts`) — parses a Redfin "Download All" CSV export (a feature Redfin
   explicitly permits, and the only real-data path that needs no API key or account) into `RawListing[]`. Not wired
   into `getActiveProvider()` since it takes a CSV string rather than reading env config; `scripts/import-csv.ts` is
@@ -100,10 +114,15 @@ fully hands-off.
 (`POST /api/sync`), the Vercel cron (`GET /api/cron/sync`), the Settings connect flow (mode "full"), and the two
 CLI scripts. It layers RentCast-only quota guards on top of fetch→ingest→clear-mock→record-status:
 
-- **Catch-up escalation** (mode "daily", checked first): if `AppConfig.lastFullSyncAt` is **null** — first
-  connect, or a deployment upgraded from code whose pagination was capped — the daily trigger atomically claims
-  the catch-up (`claimCatchUpFullSync`, a set-if-null conditional UPDATE so two simultaneous Refresh clicks can't
-  both launch it) and runs a **full all-county pull instead**, bypassing the daily guard. This is how an
+- **Catch-up escalation** (mode "daily", checked first): if `AppConfig.lastFullSyncAt` is **null** *or*
+  `AppConfig.fullSyncCoverage` differs from `SYNC_COVERAGE_VERSION` (a signature of the query strategy + county
+  list) — first connect, a pagination fix, a changed county list, or the county-param bug fix — the daily trigger
+  atomically claims the catch-up (`claimCatchUpFullSync`, a conditional UPDATE so two simultaneous Refresh clicks
+  can't both launch it) and runs a **full all-county pull instead**, bypassing the daily guard. When rows already
+  exist under a *different* signature (`hasStaleCoverageData`), they were gathered under superseded rules and may
+  be mis-attributed, so after a successful fetch the run **purges that source's rows** (`purgeListingsForSource`)
+  and replaces them rather than merging — deleting only post-fetch, so a failed pull never empties the site.
+  **Bump `SYNC_COVERAGE_VERSION` whenever a change alters which listings a full sync should yield.** This is how an
   already-deployed site self-heals to comprehensive coverage within one cron tick / Refresh click after a code
   upgrade, with zero manual steps. A crashed or budget-blocked catch-up releases the claim (`resetCatchUpClaim`)
   so it retries later; explicit full runs (connect flow, `sync:full`) set the marker via `markFullSyncCompleted`.

@@ -1,4 +1,4 @@
-import { getTownInfo } from "@/lib/towns";
+import { getTownInfo, getCountySearchArea, isNorthNjCounty } from "@/lib/towns";
 import type { PropertyType } from "@/types/listing";
 import type { ListingProvider, ListingProviderQuery, RawListing } from "./types";
 
@@ -18,17 +18,23 @@ export class RentCastAuthError extends Error {}
  * RentCast API (https://www.rentcast.io/api) adapter. Requires RENTCAST_API_KEY
  * to be set — see .env.example.
  *
- * Queries by **county** (via `county` + `state` params), not by individual town —
- * a per-town query (51 towns) would cost far more requests than per-county
- * (7 counties) for the same coverage, and RentCast's free tier is only 50
- * requests/month. Each county paginates fully (no listing cap), so the entire
- * active for-sale inventory of North NJ is pulled; `query.requestGate` (wired
- * to the monthly budget in runSync) is what bounds total requests, stopping
- * pagination mid-run if the budget is hit. `src/lib/syncRotation.ts` spreads
- * the daily automatic refresh across one county per day.
+ * Queries one **circular area per county** (`latitude` + `longitude` + `radius`,
+ * from `COUNTY_SEARCH_AREAS`). RentCast's `/listings/sale` supports searching by
+ * address, by city/state/zip, or by circular area — there is **no county
+ * filter**. Sending `county=…` gets silently ignored, degrading the request to
+ * an unfiltered statewide query; that produced a tiny, mis-attributed dataset
+ * (2 listings for a whole town) before this was fixed. Per-town queries would
+ * be accurate but cost one request per municipality (~270 for North NJ), far
+ * beyond the 50/month free tier, so circles are the efficient supported option.
  *
- * Docs: GET /listings/sale — filter by county + state, paginate with offset/limit
- * (limit accepts up to 500; each page is a separate billed request).
+ * Each area paginates fully (no listing cap) and every row is attributed to the
+ * county RentCast reports, with out-of-region rows dropped. `query.requestGate`
+ * (wired to the monthly budget in runSync) bounds total requests, stopping
+ * pagination mid-run if the budget is hit. `src/lib/syncRotation.ts` spreads the
+ * daily automatic refresh across one county per day.
+ *
+ * Docs: GET /listings/sale — paginate with offset/limit (limit max 500; each
+ * page is a separate billed request).
  */
 export class RentCastListingProvider implements ListingProvider {
   readonly key = "rentcast";
@@ -38,6 +44,12 @@ export class RentCastListingProvider implements ListingProvider {
 
   /** True when the most recent fetchListings() stopped early because the requestGate denied a request (budget hit). */
   lastFetchGateDenied = false;
+
+  /** Per-county kept-listing counts from the most recent fetch — surfaced in sync notes so coverage is auditable. */
+  lastFetchCountyCounts: Record<string, number> = {};
+
+  /** How many fetched rows were dropped as outside North NJ (radius spillover) or unusable. */
+  lastFetchDiscarded = 0;
 
   constructor(private apiKey: string) {
     if (!apiKey) {
@@ -57,8 +69,13 @@ export class RentCastListingProvider implements ListingProvider {
     const results: RawListing[] = [];
     this.lastFetchRequestCount = 0;
     this.lastFetchGateDenied = false;
+    this.lastFetchCountyCounts = {};
+    this.lastFetchDiscarded = 0;
 
     for (const county of counties) {
+      const area = getCountySearchArea(county);
+      if (!area) continue; // unknown county name — nothing sensible to query
+
       let offset = 0;
       for (let page = 0; page < maxPages; page++) {
         // Budget gate: ask permission for each request. A denial (monthly
@@ -69,9 +86,14 @@ export class RentCastListingProvider implements ListingProvider {
           return results;
         }
 
+        // Circular-area search (lat/long/radius) — a documented, supported
+        // search mode. Do NOT send `county`: RentCast has no county filter on
+        // this endpoint and silently ignores it, which turns every request
+        // into an unfiltered statewide query.
         const params = new URLSearchParams({
-          county,
-          state: "NJ",
+          latitude: String(area.lat),
+          longitude: String(area.lng),
+          radius: String(area.radius),
           status: "Active",
           limit: String(PAGE_SIZE),
           offset: String(offset),
@@ -96,10 +118,17 @@ export class RentCastListingProvider implements ListingProvider {
         const items = Array.isArray(data) ? data : [];
         for (const item of items) {
           const mapped = mapRentCastListing(item, county);
-          if (mapped) results.push(mapped);
+          // null = outside the North NJ counties we track (a radius circle
+          // always spills into neighbouring counties/states) or unusable.
+          if (mapped) {
+            results.push(mapped);
+            this.lastFetchCountyCounts[mapped.county] = (this.lastFetchCountyCounts[mapped.county] ?? 0) + 1;
+          } else {
+            this.lastFetchDiscarded++;
+          }
         }
 
-        if (items.length < PAGE_SIZE) break; // last page for this county
+        if (items.length < PAGE_SIZE) break; // last page for this area
         offset += PAGE_SIZE;
       }
     }
@@ -114,6 +143,9 @@ interface RentCastListingRaw {
   formattedAddress?: string;
   addressLine1?: string;
   city?: string;
+  /** RentCast returns the listing's real county — the authoritative source for attribution. */
+  county?: string;
+  state?: string;
   zipCode?: string;
   latitude?: number;
   longitude?: number;
@@ -131,18 +163,40 @@ interface RentCastListingRaw {
   listingAgent?: unknown;
 }
 
-function mapRentCastListing(raw: RentCastListingRaw, queriedCounty: string): RawListing | null {
+/**
+ * Maps one RentCast row, or returns null to drop it.
+ *
+ * County attribution comes from RentCast's own `county` field — never from the
+ * county we searched near. A radius search returns everything within the
+ * circle, including neighbouring counties and other states, so trusting the
+ * query would file listings under counties they aren't in (the old bug where
+ * the town and county filters disagreed). Rows outside the tracked North NJ
+ * counties are dropped here, which is also what keeps a spilling circle from
+ * polluting the dataset.
+ */
+function mapRentCastListing(raw: RentCastListingRaw, searchedNearCounty: string): RawListing | null {
   if (!raw || (!raw.id && !raw.formattedAddress)) return null;
   const town = raw.city ?? "Unknown";
   const townInfo = getTownInfo(town);
+
+  // 1. RentCast's own county. 2. Our curated town->county map. 3. As a last
+  // resort for an NJ row with neither, the county whose circle we searched
+  // (its centre), which is at least geographically adjacent.
+  const reported = raw.county?.trim();
+  const county = isNorthNjCounty(reported)
+    ? reported
+    : townInfo && isNorthNjCounty(townInfo.county)
+      ? townInfo.county
+      : !reported && (raw.state ?? "NJ") === "NJ"
+        ? searchedNearCounty
+        : null;
+  if (!county || !isNorthNjCounty(county)) return null;
 
   return {
     externalId: String(raw.id ?? raw.formattedAddress),
     address: raw.addressLine1 ?? raw.formattedAddress ?? "Unknown address",
     town,
-    // Trust the county we queried by (the API already filtered on it) rather than a town
-    // lookup, since RentCast may return towns/boroughs not present in our curated TOWNS list.
-    county: queriedCounty,
+    county,
     zip: raw.zipCode ?? "",
     lat: raw.latitude ?? null,
     lng: raw.longitude ?? null,

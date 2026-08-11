@@ -177,6 +177,17 @@ export async function ingestRawListings(rawsInput: RawListing[], source: string)
  * syncs, so switching from demo data to a live source is fully hands-off —
  * no separate manual "clear mock" step required. A no-op once none remain.
  */
+/**
+ * Deletes every listing for a source (cascading to its snapshots and price
+ * changes). Used when a coverage change invalidates the stored dataset — rows
+ * gathered under superseded query rules can carry wrong attribution, so they're
+ * replaced wholesale rather than merged with freshly-pulled rows.
+ */
+export async function purgeListingsForSource(source: string): Promise<number> {
+  const result = await prisma.listing.deleteMany({ where: { source } });
+  return result.count;
+}
+
 export async function clearMockListingsIfLiveSource(activeSource: string): Promise<number> {
   if (activeSource === "mock") return 0;
   const result = await prisma.listing.deleteMany({ where: { source: "mock" } });

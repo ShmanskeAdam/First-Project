@@ -79,23 +79,33 @@ for people who prefer them.
 
 ### Comprehensive coverage — the whole dataset, every town
 
-- Queries go **per county** (7 counties), and each county **paginates fully** (500/page, RentCast's max, no
-  listing cap) — so the connect-time full sync pulls the *entire* active for-sale inventory of North NJ, every
-  municipality included (Boonton, Mountain Lakes, and hundreds more, not just a curated shortlist).
+- Covers all **10 North NJ counties** — Bergen, Essex, Hudson, Morris, Passaic, Union, Somerset, Sussex, Warren,
+  and Hunterdon.
+- Queries a **circular geographic area per county** (RentCast supports address / city / zip / lat-long-radius
+  searches — it has *no* county filter), and each area **paginates fully** (500/page, RentCast's max, no listing
+  cap) — so a full sync pulls the *entire* active for-sale inventory, every municipality included (Boonton,
+  Mountain Lakes, and hundreds more, not just a curated shortlist).
+- Every listing is filed under the county **RentCast itself reports**, so the county and town filters always
+  agree; listings outside the tracked counties are discarded.
 - The **town filter options are derived from the data itself** (distinct towns actually present), so every town
   that has listings is selectable and always filters correctly — no hardcoded town list to fall out of sync with
   what RentCast returns.
 - **Land-only listings are excluded from Top Deals**: a $1/sqft floor plus a scoring guard mean lots with no
   house (0 sqft) can never masquerade as underpriced deals.
-- **Self-healing after upgrades**: if the deployed site's data was pulled under older, capped code (or a full
-  pull has never completed), the very next sync — the daily cron or one Refresh click — automatically escalates
-  itself to a full all-county pull. No redeploy ritual, no manual re-sync command.
+- **Self-healing after upgrades**: the app records a *coverage signature* (query strategy + county list) with
+  each full pull. If the deployed site's data was gathered under different rules — older capped pagination, a
+  smaller county list, or the pre-fix county query — the very next sync (daily cron or one Refresh click)
+  escalates itself to a full all-county pull and **replaces** the stale rows rather than merging with them. No
+  redeploy ritual, no manual re-sync command.
 
 ### How it stays inside RentCast's free tier (50 requests/month) unattended
 
-- The automatic path pulls **one county per calendar day** on a weekly rotation — full coverage refreshes on a
-  rolling basis. (A full pull of all of North NJ is roughly 20-30 requests, so it fits in a single month with
-  room for daily refreshes; the free tier can hold the whole dataset, it just can't re-pull all of it daily.)
+- The automatic path pulls **one county per calendar day** on a rolling ~10-day rotation, so the dataset keeps
+  refreshing without re-pulling everything daily. Note a *comprehensive* pull of all 10 counties can exceed one
+  month of free-tier requests (it is bounded by total inventory ÷ 500 per page, plus overlap between the search
+  circles); the budget gate stops it cleanly mid-run and the rotation fills in the remainder, so coverage
+  converges over following syncs instead of failing. A paid RentCast tier removes the constraint —
+  raise `RENTCAST_MONTHLY_BUDGET` to match.
 - A **daily guard** makes repeat Refresh clicks free: once today's county has synced, further clicks are no-ops
   with an explanatory note ("Today's live data is already in").
 - A **monthly budget meter** (default 45, override with `RENTCAST_MONTHLY_BUDGET` on a paid plan) is tracked in
@@ -105,7 +115,7 @@ for people who prefer them.
   check-before-write. Current usage is shown on the Settings page.
 - Duplicates can't happen: every listing upserts by RentCast's own listing ID.
 
-CLI equivalents exist for both modes: `npm run sync` (today's rotating county) and `npm run sync:full` (all 7
+CLI equivalents exist for both modes: `npm run sync` (today's rotating county) and `npm run sync:full` (all 10
 counties at once, same budget enforcement).
 
 ## Manual refresh
