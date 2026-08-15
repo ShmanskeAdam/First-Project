@@ -118,6 +118,25 @@ for people who prefer them.
 CLI equivalents exist for both modes: `npm run sync` (today's rotating county) and `npm run sync:full` (all 10
 counties at once, same budget enforcement).
 
+### Why is a listing I saw on Zillow missing?
+
+RentCast is **not an MLS feed** — they assemble listings from public records, tax assessors, and online
+directories (they target ~96% residential coverage but have no direct MLS connection), so some genuine gaps
+versus Zillow are expected. That said, a missing listing has three very different causes, and
+`npm run diagnose` tells you which one it is by asking RentCast directly:
+
+```bash
+npm run diagnose -- --town "Montclair" --address "88 Edgemont Rd, Montclair, NJ 07043"
+```
+
+It reports what this app stored, whether RentCast has that exact address (and with what status), how many
+listings RentCast has for the town versus what we hold, and whether the county search circle actually reaches
+it. The output explains how to read each combination. It costs ~4 API requests, metered against the same
+monthly budget as everything else.
+
+Note the sync currently requests `status=Active` only, so pending / under-contract / coming-soon listings —
+and all sold listings — are excluded by design.
+
 ## Manual refresh
 
 The nav bar shows "Last refreshed: Xm ago" plus a **Refresh** button any visitor can click to pull fresh listings
@@ -173,7 +192,8 @@ to the Refresh button the first time this happens.
 | `npm run db:seed` | Wipe and reseed mock data |
 | `npm run db:studio` | Prisma Studio, a GUI for the DB |
 | `npm run sync` | Pull today's rotating county (RentCast) or all towns (other providers) |
-| `npm run sync:full` | One-time full sync across all 7 North NJ counties at once (costs more quota) |
+| `npm run sync:full` | Full sync across all 10 North NJ counties at once (costs more quota) |
+| `npm run diagnose` | Ask RentCast why a town/address is missing (see "Why is a listing missing?") |
 | `npm run import:csv -- <file>` | One-off import of a Redfin CSV export — no API key needed |
 | `npm run clear:mock` | Delete all mock-sourced listings (e.g. before/after a real-data import) |
 | `npm run vercel-build` | What Vercel actually runs: generate client, push schema, build |
